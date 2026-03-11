@@ -27,6 +27,7 @@ export const useLiveInterview = () => {
     jobDescription,
     resume,
     transcript,
+    setTranscript,
     addTranscriptItem,
     updateLastTranscriptItem,
     aiStatus,
@@ -44,7 +45,6 @@ export const useLiveInterview = () => {
   const isPlayingRef = useRef(false);
   const audioSourceRef = useRef<AudioBufferSourceNode | null>(null);
 
-  // Use refs to prevent stale closures inside WebSocket callbacks
   const isMutedRef = useRef(isMuted);
   useEffect(() => {
     isMutedRef.current = isMuted;
@@ -190,44 +190,58 @@ export const useLiveInterview = () => {
         }
       };
       
-      let newAiMessage = true;
-
       ws.onmessage = (event) => {
+        console.log("WebSocket message received:", event.data);
+
         try {
           const response = JSON.parse(event.data);
-          
-          const parts = response.serverContent?.modelTurn?.parts || response.serverContent?.content?.parts;
-          
-          if (parts) {
-              for (const part of parts) {
-                  if (part.text) {
-                      if (newAiMessage) {
-                          addTranscriptItem({ speaker: "AI Interviewer", text: part.text });
-                          newAiMessage = false;
-                      } else {
-                          updateLastTranscriptItem(part.text);
-                      }
-                  }
-                  
-                  const audioData = part.inlineData?.data;
-                  if (audioData) {
-                      audioQueueRef.current.push(audioData);
-                      playNextInQueue();
-                  }
-              }
+
+          if (response.error) {
+            console.error("WebSocket server error:", response.error.message);
+            toast({
+              title: "Interview Error",
+              description: response.error.message,
+              variant: "destructive",
+            });
+            return;
           }
 
-          if (response.serverContent?.interrupted || response.realtimeInputFeedback?.speechDetected) {
+          const modelTurn = response.serverContent?.modelTurn;
+          if (modelTurn?.parts) {
+            for (const part of modelTurn.parts) {
+              if (part.text) {
+                setTranscript(currentTranscript => {
+                  const lastEntry = currentTranscript[currentTranscript.length - 1];
+                  if (lastEntry && lastEntry.speaker === 'AI Interviewer') {
+                    lastEntry.text += part.text;
+                    return [...currentTranscript];
+                  } else {
+                    return [...currentTranscript, { speaker: 'AI Interviewer', text: part.text }];
+                  }
+                });
+              }
+
+              if (part.inlineData?.data) {
+                audioQueueRef.current.push(part.inlineData.data);
+                if (!isPlayingRef.current) {
+                  playNextInQueue();
+                }
+              }
+            }
+          }
+
+          if (response.serverContent?.interrupted) {
+             console.log("AI speech interrupted.");
              audioQueueRef.current = [];
              if (audioSourceRef.current) {
                 audioSourceRef.current.stop();
+                isPlayingRef.current = false;
              }
-             isPlayingRef.current = false;
           }
 
-          if(response.serverContent?.turnComplete || response.serverContent?.endOfResponse) {
-            newAiMessage = true;
-            setAiStatus("listening");
+          if (response.serverContent?.turnComplete) {
+             console.log("AI turn complete.");
+             setAiStatus("listening");
           }
         } catch (e) {
           console.error("Error parsing WebSocket message:", e);
@@ -262,7 +276,7 @@ export const useLiveInterview = () => {
       setInterviewStatus("idle");
       if (workletUrl) URL.revokeObjectURL(workletUrl);
     }
-  }, [setInterviewStatus, setAiStatus, toast, jobDescription, resume, addTranscriptItem, updateLastTranscriptItem, playNextInQueue]);
+  }, [jobDescription, resume, setInterviewStatus, setAiStatus, setTranscript, toast, playNextInQueue]);
 
   const endInterview = useCallback(async () => {
     setAiStatus("thinking");
