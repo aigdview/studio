@@ -1,71 +1,102 @@
 // public/audio-processor.js
 
-// Custom Base64 implementation because btoa is not available in AudioWorkletGlobalScope
-const b64 = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/=";
-const _btoa = (string) => {
-    string = String(string);
-    let bitmap, a, b, c,
-        result = "",
-        i = 0,
-        rest = string.length % 3;
-
-    for (; i < string.length;) {
-        if ((a = string.charCodeAt(i++)) > 255 ||
-            (b = string.charCodeAt(i++)) > 255 ||
-            (c = string.charCodeAt(i++)) > 255)
-            throw new TypeError("Failed to execute '_btoa': The string to be encoded contains characters outside of the Latin1 range.");
-
-        bitmap = (a << 16) | (b << 8) | c;
-        result += b64.charAt(bitmap >> 18 & 63) + b64.charAt(bitmap >> 12 & 63) +
-            b64.charAt(bitmap >> 6 & 63) + b64.charAt(bitmap & 63);
-    }
-
-    return rest ? result.slice(0, rest - 3) + "===".substring(rest) : result;
-};
-
-
 class AudioProcessor extends AudioWorkletProcessor {
   constructor() {
     super();
     this.buffer = [];
-    // The API expects audio chunks of 100ms.
-    // With a sample rate of 16000, that is 1600 samples.
-    this.bufferSize = 1600;
+    // Buffer 100ms of audio data at 16kHz
+    this.bufferSize = 1600; 
+    this._bytes = new Int16Array(this.bufferSize);
+    this._bytesWritten = 0;
   }
+
+  // pcm-to-base64
+  // Reference: https://github.com/xiangyuecn/Recorder/blob/master/src/engine/wav.js
+  pcmToBase64(pcm) {
+    let
+      pcm_data = new Uint8Array(pcm.buffer)
+      , pcm_len = pcm_data.length
+      , pcm_idx = 0;
+
+    let
+      bytes = ""
+      , base64 = ""
+      , code = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
+      , b, L, R, c, d;
+
+    while (pcm_idx < pcm_len) {
+      b = pcm_data[pcm_idx];
+      pcm_idx++;
+      bytes += String.fromCharCode(b);
+
+      if (bytes.length >= 3) {
+        L = bytes.charCodeAt(0);
+        R = bytes.charCodeAt(1);
+        c = bytes.charCodeAt(2);
+        bytes = "";
+
+        d = L >> 2;
+        base64 += code[d];
+
+        d = (L & 3) << 4 | R >> 4;
+        base64 += code[d];
+
+        d = (R & 15) << 2 | c >> 6;
+        base64 += code[d];
+
+        d = c & 63;
+        base64 += code[d];
+      };
+    };
+
+    if (bytes.length > 0) {
+      L = bytes.charCodeAt(0);
+      R = bytes.length > 1 ? bytes.charCodeAt(1) : 0;
+      c = 0;
+
+      d = L >> 2;
+      base64 += code[d];
+
+      d = (L & 3) << 4 | R >> 4;
+      base64 += code[d];
+
+      if (bytes.length > 1) {
+        d = (R & 15) << 2 | c >> 6;
+        base64 += code[d];
+      };
+      base64 += bytes.length > 1 ? "=" : "==";
+    };
+
+    return base64;
+  };
 
   process(inputs, outputs, parameters) {
+    // Only process mono audio
     const input = inputs[0];
-    if (input && input.length > 0) {
-      const pcmData = input[0];
-      this.buffer.push(...pcmData);
-
-      while (this.buffer.length >= this.bufferSize) {
-        const chunk = this.buffer.splice(0, this.bufferSize);
-        const base64Data = this.pcmToBase64(chunk);
-        this.port.postMessage({ audioData: base64Data });
-      }
+    const channelData = input[0];
+    if (!channelData) {
+      return true;
     }
+
+    // Buffer audio data
+    for (let i = 0; i < channelData.length; i++) {
+        const val = Math.max(-1, Math.min(1, channelData[i]));
+        this._bytes[this._bytesWritten] = val * 0x7FFF;
+        this._bytesWritten++;
+
+        if (this._bytesWritten >= this.bufferSize) {
+            const base64 = this.pcmToBase64(this._bytes);
+            this.port.postMessage({ audioData: base64 });
+            this._bytesWritten = 0;
+        }
+    }
+
     return true;
-  }
-
-  pcmToBase64(pcmData) {
-    // Convert float32 PCM to 16-bit PCM
-    const pcm16i = new Int16Array(pcmData.length);
-    for (let i = 0; i < pcmData.length; i++) {
-      let s = Math.max(-1, Math.min(1, pcmData[i]));
-      pcm16i[i] = s < 0 ? s * 0x8000 : s * 0x7fff;
-    }
-
-    // Convert to a string of binary characters
-    let byteChars = "";
-    for (let i = 0; i < pcm16i.length; i++) {
-      byteChars += String.fromCharCode(pcm16i[i] & 0xff);
-      byteChars += String.fromCharCode((pcm16i[i] >> 8) & 0xff);
-    }
-
-    // Base64 encode the binary string using our custom implementation
-    return _btoa(byteChars);
   }
 }
 
-registerProcessor("audio-processor", AudioProcessor);
+try {
+  registerProcessor('audio-processor', AudioProcessor);
+} catch (e) {
+  console.error("Failed to register audio-processor", e);
+}
