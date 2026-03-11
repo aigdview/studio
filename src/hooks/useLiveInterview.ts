@@ -42,6 +42,7 @@ export const useLiveInterview = () => {
   const mediaStreamRef = useRef<MediaStream | null>(null);
   const audioQueueRef = useRef<string[]>([]);
   const isPlayingRef = useRef(false);
+  const audioSourceRef = useRef<AudioBufferSourceNode | null>(null);
 
   // Use refs to prevent stale closures inside WebSocket callbacks
   const isMutedRef = useRef(isMuted);
@@ -81,11 +82,13 @@ export const useLiveInterview = () => {
         audioBuffer.getChannelData(0).set(float32Data);
 
         const source = audioContextRef.current.createBufferSource();
+        audioSourceRef.current = source;
         source.buffer = audioBuffer;
         source.connect(audioContextRef.current.destination);
         source.start();
 
         source.onended = () => {
+          audioSourceRef.current = null;
           isPlayingRef.current = false;
           playNextInQueue();
         };
@@ -144,7 +147,7 @@ export const useLiveInterview = () => {
               ],
             },
             generationConfig: {
-              responseModalities: ["AUDIO"],
+              responseModalities: ["TEXT", "AUDIO"],
               speechConfig: {
                 voiceConfig: { prebuiltVoiceConfig: { voiceName: "Aoede" } },
               },
@@ -206,7 +209,7 @@ export const useLiveInterview = () => {
                       }
                   }
                   
-                  const audioData = part.inlineData?.data || response.serverContent?.content?.audio;
+                  const audioData = part.inlineData?.data;
                   if (audioData) {
                       audioQueueRef.current.push(audioData);
                       playNextInQueue();
@@ -216,6 +219,9 @@ export const useLiveInterview = () => {
 
           if (response.serverContent?.interrupted || response.realtimeInputFeedback?.speechDetected) {
              audioQueueRef.current = [];
+             if (audioSourceRef.current) {
+                audioSourceRef.current.stop();
+             }
              isPlayingRef.current = false;
           }
 
