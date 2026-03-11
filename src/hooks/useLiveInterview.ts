@@ -67,7 +67,6 @@ export const useLiveInterview = () => {
 
     if (base64Audio && audioContextRef.current) {
       try {
-        // Ensure AudioContext is running (browsers can suspend it)
         if (audioContextRef.current.state === 'suspended') {
           await audioContextRef.current.resume();
         }
@@ -167,7 +166,6 @@ export const useLiveInterview = () => {
       };
 
       workletNode.port.onmessage = (event) => {
-        // DO NOT send audio until the server has completed setup
         if (!isSetupCompleteRef.current || !wsRef.current || wsRef.current.readyState !== WebSocket.OPEN || isMutedRef.current) {
           return;
         }
@@ -207,11 +205,9 @@ export const useLiveInterview = () => {
         try {
           const response = JSON.parse(event.data);
           
-          // 1. Handle Setup Complete & Kickoff the Interview
           if (response.setupComplete) {
             isSetupCompleteRef.current = true;
             
-            // Force the AI to start speaking by sending an initial text prompt
             const kickoffMessage = {
               clientContent: {
                 turns: [
@@ -227,7 +223,6 @@ export const useLiveInterview = () => {
             return;
           }
 
-          // 2. Handle AI Responses (Text and Audio)
           const parts = response.serverContent?.modelTurn?.parts || response.serverContent?.content?.parts;
           if (parts) {
               for (const part of parts) {
@@ -248,7 +243,6 @@ export const useLiveInterview = () => {
               }
           }
 
-          // 3. Handle User Speech Transcription
           if (response.speechRecognitionResult) {
             const { text, isFinal } = response.speechRecognitionResult;
             if (text) {
@@ -267,18 +261,15 @@ export const useLiveInterview = () => {
             }
           }
 
-          // 4. Handle Interruptions
           if (response.serverContent?.interrupted || response.realtimeInputFeedback?.speechDetected) {
              audioQueueRef.current = [];
              isPlayingRef.current = false;
-             // Immediately stop the currently playing audio chunk
              if (currentAudioSourceRef.current) {
                 currentAudioSourceRef.current.stop();
                 currentAudioSourceRef.current = null;
              }
           }
 
-          // 5. Handle End of AI Turn
           if(response.serverContent?.turnComplete || response.serverContent?.endOfResponse) {
             newAiMessage = true;
             setAiStatus("listening");
