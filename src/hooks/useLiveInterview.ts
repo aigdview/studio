@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useRef, useCallback, useEffect } from "react";
+import { useState, useRef, useCallback } from "react";
 import { useInterview } from "./useInterview";
 import { useToast } from "./use-toast";
 import { generateInterviewFeedback } from "@/ai/flows/generate-interview-feedback";
@@ -41,7 +41,6 @@ export const useLiveInterview = () => {
   const { toast } = useToast();
 
   const [isMuted, setIsMuted] = useState(false);
-  const isSpeaking = aiStatus === 'speaking';
   const wsRef = useRef<WebSocket | null>(null);
   const audioContextRef = useRef<AudioContext | null>(null);
   const mediaStreamRef = useRef<MediaStream | null>(null);
@@ -55,13 +54,13 @@ export const useLiveInterview = () => {
       }
       return;
     }
-  
+
     isPlayingRef.current = true;
     if (aiStatus !== 'speaking') {
       setAiStatus('speaking');
     }
     const base64Audio = audioQueueRef.current.shift();
-  
+
     if (base64Audio && audioContextRef.current) {
       try {
         const audioData = atob(base64Audio);
@@ -71,20 +70,20 @@ export const useLiveInterview = () => {
           const byte2 = audioData.charCodeAt(i * 2 + 1);
           pcm16Data[i] = (byte2 << 8) | byte1;
         }
-  
+
         const float32Data = new Float32Array(pcm16Data.length);
         for (let i = 0; i < pcm16Data.length; i++) {
           float32Data[i] = pcm16Data[i] / 32767.0;
         }
-  
+
         const audioBuffer = audioContextRef.current.createBuffer(1, float32Data.length, AUDIO_SAMPLE_RATE);
         audioBuffer.getChannelData(0).set(float32Data);
-  
+
         const source = audioContextRef.current.createBufferSource();
         source.buffer = audioBuffer;
         source.connect(audioContextRef.current.destination);
         source.start();
-  
+
         source.onended = () => {
           isPlayingRef.current = false;
           playNextInQueue();
@@ -106,7 +105,7 @@ export const useLiveInterview = () => {
     let workletUrl = "";
     
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({ 
+      const stream = await navigator.mediaDevices.getUserMedia({
         audio: {
           sampleRate: AUDIO_SAMPLE_RATE,
           channelCount: 1,
@@ -114,19 +113,45 @@ export const useLiveInterview = () => {
       });
       mediaStreamRef.current = stream;
 
-      audioContextRef.current = new (window.AudioContext || (window as any).webkitAudioContext)({
+      const audioContext = new (window.AudioContext || (window as any).webkitAudioContext)({
         sampleRate: AUDIO_SAMPLE_RATE,
       });
+      audioContextRef.current = audioContext;
 
       const blob = new Blob([workletCode], { type: 'application/javascript' });
       workletUrl = URL.createObjectURL(blob);
 
-      await audioContextRef.current.audioWorklet.addModule(workletUrl);
+      await audioContext.audioWorklet.addModule(workletUrl);
 
-      const workletNode = new AudioWorkletNode(audioContextRef.current, 'audio-processor');
+      const workletNode = new AudioWorkletNode(audioContext, 'audio-processor');
 
-      const source = audioContextRef.current.createMediaStreamSource(stream);
+      const source = audioContext.createMediaStreamSource(stream);
       source.connect(workletNode);
+
+      const ws = new WebSocket(WEBSOCKET_URL);
+      wsRef.current = ws;
+
+      ws.onopen = () => {
+        const setupMessage = {
+          setup: {
+            model: "models/gemini-2.5-flash-native-audio-latest",
+            systemInstruction: {
+              parts: [
+                {
+                  text: `You are an expert technical interviewer named Echo. Conduct a realistic mock interview for an IT role based on the provided Job Description and Candidate Resume. Your goal is to assess the candidate's skills and experience. Ask one question at a time. Wait for the candidate's response. Ask follow-up questions based on their answers. Be conversational, professional, and act like a real human. Start the interview by introducing yourself and asking the first question. If the candidate interrupts you, stop your current thought and address their interruption naturally.\n\n## Job Description:\n${jobDescription}\n\n## Candidate Resume:\n${resume}`,
+                },
+              ],
+            },
+            generationConfig: {
+              responseModalities: ["AUDIO"],
+              speechConfig: {
+                voiceConfig: { prebuiltVoiceConfig: { voiceName: "Aoede" } },
+              },
+            },
+          },
+        };
+        ws.send(JSON.stringify(setupMessage));
+      };
 
       workletNode.port.onmessage = (event) => {
         const float32Audio = event.data as Float32Array;
@@ -161,33 +186,7 @@ export const useLiveInterview = () => {
           }
         }
       };
-
-      const ws = new WebSocket(WEBSOCKET_URL);
       
-      ws.onopen = () => {
-        const setupMessage = {
-          setup: {
-            model: "models/gemini-2.5-flash-native-audio-latest",
-            systemInstruction: {
-              parts: [
-                {
-                  text: `You are an expert technical interviewer named Echo. Conduct a realistic mock interview for an IT role based on the provided Job Description and Candidate Resume. Your goal is to assess the candidate's skills and experience. Ask one question at a time. Wait for the candidate's response. Ask follow-up questions based on their answers. Be conversational, professional, and act like a real human. Start the interview by introducing yourself and asking the first question. If the candidate interrupts you, stop your current thought and address their interruption naturally.\n\n## Job Description:\n${jobDescription}\n\n## Candidate Resume:\n${resume}`,
-                },
-              ],
-            },
-            generationConfig: {
-              responseModalities: ["AUDIO"],
-              speechConfig: {
-                voiceConfig: { prebuiltVoiceConfig: { voiceName: "Aoede" } },
-              },
-            },
-          },
-        };
-        ws.send(JSON.stringify(setupMessage));
-      };
-
-      wsRef.current = ws;
-
       let newAiMessage = true;
 
       ws.onmessage = (event) => {
