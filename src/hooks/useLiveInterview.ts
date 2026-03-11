@@ -1,28 +1,24 @@
 "use client";
 
-import { useState, useRef, useCallback } from "react";
+import { useState, useRef, useCallback, useEffect } from "react";
 import { useInterview } from "./useInterview";
 import { useToast } from "./use-toast";
 import { generateInterviewFeedback } from "@/ai/flows/generate-interview-feedback";
 
 const WEBSOCKET_URL = `wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent?key=${process.env.NEXT_PUBLIC_GEMINI_API_KEY}`;
-const AUDIO_SAMPLE_RATE = 16000;
+const AUDIO_SAMPLE_RATE = 16000; // Input sample rate for microphone
 
-// 1. Define the worklet code as a string right inside the hook.
-// This worklet now simply forwards the raw Float32Array audio data.
 const workletCode = `
   class AudioProcessor extends AudioWorkletProcessor {
     process(inputs, outputs, parameters) {
       const input = inputs[0];
       if (input && input.length > 0) {
         const channelData = input[0];
-        // Post a copy of the Float32Array, not the original buffer
         this.port.postMessage(new Float32Array(channelData));
       }
       return true;
     }
   }
-  // The name here MUST match the name in new AudioWorkletNode
   registerProcessor('audio-processor', AudioProcessor);
 `;
 
@@ -47,18 +43,23 @@ export const useLiveInterview = () => {
   const audioQueueRef = useRef<string[]>([]);
   const isPlayingRef = useRef(false);
 
+  // Use refs to prevent stale closures inside WebSocket callbacks
+  const isMutedRef = useRef(isMuted);
+  useEffect(() => {
+    isMutedRef.current = isMuted;
+  }, [isMuted]);
+
   const playNextInQueue = useCallback(async () => {
     if (isPlayingRef.current || audioQueueRef.current.length === 0) {
-      if (!isPlayingRef.current && aiStatus === 'speaking') {
-        setAiStatus('listening');
+      if (!isPlayingRef.current) {
+        setAiStatus((prev) => (prev === 'speaking' ? 'listening' : prev));
       }
       return;
     }
 
     isPlayingRef.current = true;
-    if (aiStatus !== 'speaking') {
-      setAiStatus('speaking');
-    }
+    setAiStatus('speaking');
+    
     const base64Audio = audioQueueRef.current.shift();
 
     if (base64Audio && audioContextRef.current) {
@@ -76,7 +77,7 @@ export const useLiveInterview = () => {
           float32Data[i] = pcm16Data[i] / 32767.0;
         }
 
-        const audioBuffer = audioContextRef.current.createBuffer(1, float32Data.length, AUDIO_SAMPLE_RATE);
+        const audioBuffer = audioContextRef.current.createBuffer(1, float32Data.length, 24000);
         audioBuffer.getChannelData(0).set(float32Data);
 
         const source = audioContextRef.current.createBufferSource();
@@ -97,7 +98,7 @@ export const useLiveInterview = () => {
       isPlayingRef.current = false;
       playNextInQueue();
     }
-  }, [aiStatus, setAiStatus]);
+  }, [setAiStatus]);
 
   const startInterview = useCallback(async () => {
     setInterviewStatus("in-progress");
@@ -169,7 +170,7 @@ export const useLiveInterview = () => {
         }
         const base64AudioData = btoa(binary);
 
-        if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN && !isMuted) {
+        if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN && !isMutedRef.current) {
           const clientContentMessage = {
             realtimeInput: {
               mediaChunks: [
@@ -181,40 +182,49 @@ export const useLiveInterview = () => {
             },
           };
           wsRef.current.send(JSON.stringify(clientContentMessage));
-          if (aiStatus !== 'speaking') {
-            setAiStatus("listening");
-          }
+          
+          setAiStatus((prev) => (prev !== 'speaking' ? 'listening' : prev));
         }
       };
       
       let newAiMessage = true;
 
       ws.onmessage = (event) => {
-        const response = JSON.parse(event.data);
-        if (response.serverContent?.content?.parts) {
-            const part = response.serverContent.content.parts[0];
-            if (part.text) {
-                if (newAiMessage) {
-                    addTranscriptItem({ speaker: "AI Interviewer", text: part.text });
-                    newAiMessage = false;
-                } else {
-                    updateLastTranscriptItem(part.text);
-                }
-            }
-        }
+        try {
+          const response = JSON.parse(event.data);
+          
+          const parts = response.serverContent?.modelTurn?.parts || response.serverContent?.content?.parts;
+          
+          if (parts) {
+              for (const part of parts) {
+                  if (part.text) {
+                      if (newAiMessage) {
+                          addTranscriptItem({ speaker: "AI Interviewer", text: part.text });
+                          newAiMessage = false;
+                      } else {
+                          updateLastTranscriptItem(part.text);
+                      }
+                  }
+                  
+                  const audioData = part.inlineData?.data || response.serverContent?.content?.audio;
+                  if (audioData) {
+                      audioQueueRef.current.push(audioData);
+                      playNextInQueue();
+                  }
+              }
+          }
 
-        if (response.serverContent?.content?.audio) {
-            audioQueueRef.current.push(response.serverContent.content.audio);
-            playNextInQueue();
-        }
-        
-        if (response.realtimeInputFeedback?.speechDetected) {
-           audioQueueRef.current = [];
-        }
+          if (response.serverContent?.interrupted || response.realtimeInputFeedback?.speechDetected) {
+             audioQueueRef.current = [];
+             isPlayingRef.current = false;
+          }
 
-        if(response.serverContent?.endOfResponse) {
-          newAiMessage = true;
-          setAiStatus("listening");
+          if(response.serverContent?.turnComplete || response.serverContent?.endOfResponse) {
+            newAiMessage = true;
+            setAiStatus("listening");
+          }
+        } catch (e) {
+          console.error("Error parsing WebSocket message:", e);
         }
       };
 
@@ -231,7 +241,9 @@ export const useLiveInterview = () => {
       ws.onclose = () => {
         if (workletUrl) URL.revokeObjectURL(workletUrl);
         mediaStreamRef.current?.getTracks().forEach((track) => track.stop());
-        audioContextRef.current?.close();
+        if (audioContextRef.current?.state !== 'closed') {
+            audioContextRef.current?.close();
+        }
       };
     } catch (error) {
       console.error("Error starting interview:", error);
@@ -242,9 +254,9 @@ export const useLiveInterview = () => {
       });
       setAiStatus("idle");
       setInterviewStatus("idle");
-       if (workletUrl) URL.revokeObjectURL(workletUrl);
+      if (workletUrl) URL.revokeObjectURL(workletUrl);
     }
-  }, [setInterviewStatus, setAiStatus, toast, jobDescription, resume, addTranscriptItem, updateLastTranscriptItem, playNextInQueue, isMuted, aiStatus]);
+  }, [setInterviewStatus, setAiStatus, toast, jobDescription, resume, addTranscriptItem, updateLastTranscriptItem, playNextInQueue]);
 
   const endInterview = useCallback(async () => {
     setAiStatus("thinking");
