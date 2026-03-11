@@ -1,6 +1,6 @@
 "use client";
 
-import { createContext, useState, type ReactNode } from "react";
+import { createContext, useState, type ReactNode, Dispatch, SetStateAction } from "react";
 import type {
   AiStatus,
   InterviewStatus,
@@ -58,7 +58,7 @@ interface InterviewContextType {
   resume: string;
   setResume: (resume: string) => void;
   transcript: TranscriptItem[];
-  setTranscript: (transcript: TranscriptItem[]) => void;
+  setTranscript: Dispatch<SetStateAction<TranscriptItem[]>>;
   addTranscriptItem: (item: TranscriptItem) => void;
   updateLastTranscriptItem: (text: string) => void;
   interviewStatus: InterviewStatus;

@@ -6,7 +6,7 @@ import { useToast } from "./use-toast";
 import { generateInterviewFeedback } from "@/ai/flows/generate-interview-feedback";
 
 const WEBSOCKET_URL = `wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent?key=${process.env.NEXT_PUBLIC_GEMINI_API_KEY}`;
-const AUDIO_SAMPLE_RATE = 16000; // Input sample rate for microphone
+const AUDIO_SAMPLE_RATE = 16000;
 
 const workletCode = `
   class AudioProcessor extends AudioWorkletProcessor {
@@ -28,6 +28,8 @@ export const useLiveInterview = () => {
     resume,
     transcript,
     setTranscript,
+    addTranscriptItem,
+    updateLastTranscriptItem,
     aiStatus,
     setAiStatus,
     setInterviewStatus,
@@ -39,9 +41,11 @@ export const useLiveInterview = () => {
   const wsRef = useRef<WebSocket | null>(null);
   const audioContextRef = useRef<AudioContext | null>(null);
   const mediaStreamRef = useRef<MediaStream | null>(null);
+  
   const audioQueueRef = useRef<string[]>([]);
   const isPlayingRef = useRef(false);
-  const audioSourceRef = useRef<AudioBufferSourceNode | null>(null);
+  const currentAudioSourceRef = useRef<AudioBufferSourceNode | null>(null);
+  const isSetupCompleteRef = useRef(false);
 
   const isMutedRef = useRef(isMuted);
   useEffect(() => {
@@ -63,6 +67,11 @@ export const useLiveInterview = () => {
 
     if (base64Audio && audioContextRef.current) {
       try {
+        // Ensure AudioContext is running (browsers can suspend it)
+        if (audioContextRef.current.state === 'suspended') {
+          await audioContextRef.current.resume();
+        }
+
         const audioData = atob(base64Audio);
         const pcm16Data = new Int16Array(audioData.length / 2);
         for (let i = 0; i < pcm16Data.length; i++) {
@@ -80,18 +89,20 @@ export const useLiveInterview = () => {
         audioBuffer.getChannelData(0).set(float32Data);
 
         const source = audioContextRef.current.createBufferSource();
-        audioSourceRef.current = source;
         source.buffer = audioBuffer;
         source.connect(audioContextRef.current.destination);
-        source.start();
+        currentAudioSourceRef.current = source;
 
         source.onended = () => {
-          audioSourceRef.current = null;
+          currentAudioSourceRef.current = null;
           isPlayingRef.current = false;
           playNextInQueue();
         };
+
+        source.start();
       } catch (error) {
         console.error("Error playing audio:", error);
+        currentAudioSourceRef.current = null;
         isPlayingRef.current = false;
         playNextInQueue();
       }
@@ -104,6 +115,7 @@ export const useLiveInterview = () => {
   const startInterview = useCallback(async () => {
     setInterviewStatus("in-progress");
     setAiStatus("thinking");
+    isSetupCompleteRef.current = false;
     let workletUrl = "";
     
     try {
@@ -126,7 +138,6 @@ export const useLiveInterview = () => {
       await audioContext.audioWorklet.addModule(workletUrl);
 
       const workletNode = new AudioWorkletNode(audioContext, 'audio-processor');
-
       const source = audioContext.createMediaStreamSource(stream);
       source.connect(workletNode);
 
@@ -156,8 +167,12 @@ export const useLiveInterview = () => {
       };
 
       workletNode.port.onmessage = (event) => {
+        // DO NOT send audio until the server has completed setup
+        if (!isSetupCompleteRef.current || !wsRef.current || wsRef.current.readyState !== WebSocket.OPEN || isMutedRef.current) {
+          return;
+        }
+
         const float32Audio = event.data as Float32Array;
-        
         const pcm16Data = new Int16Array(float32Audio.length);
         for (let i = 0; i < float32Audio.length; i++) {
           const s = Math.max(-1, Math.min(1, float32Audio[i]));
@@ -171,95 +186,102 @@ export const useLiveInterview = () => {
         }
         const base64AudioData = btoa(binary);
 
-        if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN && !isMutedRef.current) {
-          const clientContentMessage = {
-            realtimeInput: {
-              mediaChunks: [
-                {
-                  mimeType: `audio/pcm;rate=${AUDIO_SAMPLE_RATE}`,
-                  data: base64AudioData,
-                },
-              ],
-            },
-          };
-          wsRef.current.send(JSON.stringify(clientContentMessage));
-          
-          setAiStatus((prev) => (prev !== 'speaking' ? 'listening' : prev));
-        }
+        const clientContentMessage = {
+          realtimeInput: {
+            mediaChunks: [
+              {
+                mimeType: `audio/pcm;rate=${AUDIO_SAMPLE_RATE}`,
+                data: base64AudioData,
+              },
+            ],
+          },
+        };
+        wsRef.current.send(JSON.stringify(clientContentMessage));
+        
+        setAiStatus((prev) => (prev !== 'speaking' ? 'listening' : prev));
       };
       
-      ws.onmessage = (event) => {
-        console.log("WebSocket message received:", event.data);
+      let newAiMessage = true;
 
+      ws.onmessage = (event) => {
         try {
           const response = JSON.parse(event.data);
-
-          if (response.error) {
-            console.error("WebSocket server error:", response.error.message);
-            toast({
-              title: "Interview Error",
-              description: response.error.message,
-              variant: "destructive",
-            });
+          
+          // 1. Handle Setup Complete & Kickoff the Interview
+          if (response.setupComplete) {
+            isSetupCompleteRef.current = true;
+            
+            // Force the AI to start speaking by sending an initial text prompt
+            const kickoffMessage = {
+              clientContent: {
+                turns: [
+                  {
+                    role: "user",
+                    parts: [{ text: "Hello! I am ready for the interview. Please introduce yourself and ask the first question." }]
+                  }
+                ],
+                turnComplete: true
+              }
+            };
+            ws.send(JSON.stringify(kickoffMessage));
             return;
           }
 
-          // --- Handle User Speech Transcription ---
+          // 2. Handle AI Responses (Text and Audio)
+          const parts = response.serverContent?.modelTurn?.parts || response.serverContent?.content?.parts;
+          if (parts) {
+              for (const part of parts) {
+                  if (part.text) {
+                      if (newAiMessage) {
+                          addTranscriptItem({ speaker: "AI Interviewer", text: part.text });
+                          newAiMessage = false;
+                      } else {
+                          updateLastTranscriptItem(part.text);
+                      }
+                  }
+                  
+                  const audioData = part.inlineData?.data || response.serverContent?.content?.audio;
+                  if (audioData) {
+                      audioQueueRef.current.push(audioData);
+                      playNextInQueue();
+                  }
+              }
+          }
+
+          // 3. Handle User Speech Transcription
           if (response.speechRecognitionResult) {
             const { text, isFinal } = response.speechRecognitionResult;
             if (text) {
-                setTranscript(currentTranscript => {
-                    const lastEntry = currentTranscript.length > 0 ? currentTranscript[currentTranscript.length - 1] : null;
-                    if (lastEntry && lastEntry.speaker === 'Candidate' && !isFinal) {
-                        const newTranscript = [...currentTranscript];
-                        newTranscript[newTranscript.length - 1] = { ...lastEntry, text: text };
-                        return newTranscript;
-                    } else {
-                        return [...currentTranscript, { speaker: 'Candidate', text: text }];
-                    }
-                });
-            }
-          }
-          
-          // --- Handle AI Model Response ---
-          const modelTurn = response.serverContent?.modelTurn;
-          if (modelTurn?.parts) {
-            for (const part of modelTurn.parts) {
-              if (part.text) {
-                  setTranscript(currentTranscript => {
-                      const last = currentTranscript.length > 0 ? currentTranscript[currentTranscript.length - 1] : null;
-                      
-                      if (last && last.speaker === 'AI Interviewer') {
-                          const newTranscript = [...currentTranscript];
-                          newTranscript[newTranscript.length - 1] = { ...last, text: last.text + part.text };
-                          return newTranscript;
-                      } else {
-                          return [...currentTranscript, { speaker: 'AI Interviewer', text: part.text }];
-                      }
-                  });
-              }
-
-              if (part.inlineData?.data) {
-                audioQueueRef.current.push(part.inlineData.data);
-                if (!isPlayingRef.current) {
-                  playNextInQueue();
-                }
-              }
+              setTranscript(currentTranscript => {
+                  const lastEntry = currentTranscript.length > 0 ? currentTranscript[currentTranscript.length - 1] : null;
+                  if (lastEntry && lastEntry.speaker === 'Candidate' && !lastEntry.isFinal) {
+                      const newTranscript = [...currentTranscript];
+                      newTranscript[newTranscript.length - 1] = { ...lastEntry, text: text, isFinal: isFinal };
+                      return newTranscript;
+                  } 
+                  else if (text.trim()) {
+                       return [...currentTranscript, { speaker: 'Candidate', text: text, isFinal: isFinal }];
+                  }
+                  return currentTranscript;
+              });
             }
           }
 
-          if (response.serverContent?.interrupted) {
-             console.log("AI speech interrupted.");
+          // 4. Handle Interruptions
+          if (response.serverContent?.interrupted || response.realtimeInputFeedback?.speechDetected) {
              audioQueueRef.current = [];
-             if (audioSourceRef.current) {
-                audioSourceRef.current.stop();
-                isPlayingRef.current = false;
+             isPlayingRef.current = false;
+             // Immediately stop the currently playing audio chunk
+             if (currentAudioSourceRef.current) {
+                currentAudioSourceRef.current.stop();
+                currentAudioSourceRef.current = null;
              }
           }
 
-          if (response.serverContent?.turnComplete) {
-             console.log("AI turn complete.");
-             setAiStatus("listening");
+          // 5. Handle End of AI Turn
+          if(response.serverContent?.turnComplete || response.serverContent?.endOfResponse) {
+            newAiMessage = true;
+            setAiStatus("listening");
           }
         } catch (e) {
           console.error("Error parsing WebSocket message:", e);
@@ -276,7 +298,8 @@ export const useLiveInterview = () => {
         setAiStatus("idle");
       };
 
-      ws.onclose = () => {
+      ws.onclose = (event) => {
+        console.log("WebSocket closed:", event.code, event.reason);
         if (workletUrl) URL.revokeObjectURL(workletUrl);
         mediaStreamRef.current?.getTracks().forEach((track) => track.stop());
         if (audioContextRef.current?.state !== 'closed') {
@@ -294,7 +317,7 @@ export const useLiveInterview = () => {
       setInterviewStatus("idle");
       if (workletUrl) URL.revokeObjectURL(workletUrl);
     }
-  }, [jobDescription, resume, setInterviewStatus, setAiStatus, setTranscript, toast, playNextInQueue]);
+  }, [setInterviewStatus, setAiStatus, toast, jobDescription, resume, addTranscriptItem, updateLastTranscriptItem, playNextInQueue, setTranscript]);
 
   const endInterview = useCallback(async () => {
     setAiStatus("thinking");
