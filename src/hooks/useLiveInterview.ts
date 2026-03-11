@@ -28,8 +28,6 @@ export const useLiveInterview = () => {
     resume,
     transcript,
     setTranscript,
-    addTranscriptItem,
-    updateLastTranscriptItem,
     aiStatus,
     setAiStatus,
     setInterviewStatus,
@@ -206,19 +204,39 @@ export const useLiveInterview = () => {
             return;
           }
 
+          // --- Handle User Speech Transcription ---
+          if (response.speechRecognitionResult) {
+            const { text, isFinal } = response.speechRecognitionResult;
+            if (text) {
+                setTranscript(currentTranscript => {
+                    const lastEntry = currentTranscript.length > 0 ? currentTranscript[currentTranscript.length - 1] : null;
+                    if (lastEntry && lastEntry.speaker === 'Candidate' && !isFinal) {
+                        const newTranscript = [...currentTranscript];
+                        newTranscript[newTranscript.length - 1] = { ...lastEntry, text: text };
+                        return newTranscript;
+                    } else {
+                        return [...currentTranscript, { speaker: 'Candidate', text: text }];
+                    }
+                });
+            }
+          }
+          
+          // --- Handle AI Model Response ---
           const modelTurn = response.serverContent?.modelTurn;
           if (modelTurn?.parts) {
             for (const part of modelTurn.parts) {
               if (part.text) {
-                setTranscript(currentTranscript => {
-                  const lastEntry = currentTranscript[currentTranscript.length - 1];
-                  if (lastEntry && lastEntry.speaker === 'AI Interviewer') {
-                    lastEntry.text += part.text;
-                    return [...currentTranscript];
-                  } else {
-                    return [...currentTranscript, { speaker: 'AI Interviewer', text: part.text }];
-                  }
-                });
+                  setTranscript(currentTranscript => {
+                      const last = currentTranscript.length > 0 ? currentTranscript[currentTranscript.length - 1] : null;
+                      
+                      if (last && last.speaker === 'AI Interviewer') {
+                          const newTranscript = [...currentTranscript];
+                          newTranscript[newTranscript.length - 1] = { ...last, text: last.text + part.text };
+                          return newTranscript;
+                      } else {
+                          return [...currentTranscript, { speaker: 'AI Interviewer', text: part.text }];
+                      }
+                  });
               }
 
               if (part.inlineData?.data) {
