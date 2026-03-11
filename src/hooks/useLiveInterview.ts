@@ -8,6 +8,24 @@ import { generateInterviewFeedback } from "@/ai/flows/generate-interview-feedbac
 const WEBSOCKET_URL = `wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent?key=${process.env.NEXT_PUBLIC_GEMINI_API_KEY}`;
 const AUDIO_SAMPLE_RATE = 16000;
 
+// 1. Define the worklet code as a string right inside the hook.
+// This worklet now simply forwards the raw Float32Array audio data.
+const workletCode = `
+  class AudioProcessor extends AudioWorkletProcessor {
+    process(inputs, outputs, parameters) {
+      const input = inputs[0];
+      if (input && input.length > 0) {
+        const channelData = input[0];
+        // Post a copy of the Float32Array, not the original buffer
+        this.port.postMessage(new Float32Array(channelData));
+      }
+      return true;
+    }
+  }
+  // The name here MUST match the name in new AudioWorkletNode
+  registerProcessor('audio-processor', AudioProcessor);
+`;
+
 export const useLiveInterview = () => {
   const {
     jobDescription,
@@ -25,15 +43,14 @@ export const useLiveInterview = () => {
   const [isSpeaking, setIsSpeaking] = useState(false);
   const wsRef = useRef<WebSocket | null>(null);
   const audioContextRef = useRef<AudioContext | null>(null);
-  const audioWorkletNodeRef = useRef<AudioWorkletNode | null>(null);
-  const mediaStreamSourceRef = useRef<MediaStreamAudioSourceNode | null>(null);
+  const mediaStreamRef = useRef<MediaStream | null>(null);
   const audioQueueRef = useRef<string[]>([]);
   const isPlayingRef = useRef(false);
 
   // Effect to track when the AI is speaking based on the audio queue
   useEffect(() => {
     setIsSpeaking(audioQueueRef.current.length > 0 || isPlayingRef.current);
-  }, [transcript]); // Rerunning on transcript updates gives a frequent check
+  }, [transcript]);
 
   const playNextInQueue = useCallback(async () => {
     if (isPlayingRef.current || audioQueueRef.current.length === 0) {
@@ -102,21 +119,48 @@ export const useLiveInterview = () => {
   const startInterview = useCallback(async () => {
     setInterviewStatus("in-progress");
     setAiStatus("thinking");
+    let workletUrl = "";
+    
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-      audioContextRef.current = new AudioContext({ sampleRate: AUDIO_SAMPLE_RATE });
-      await audioContextRef.current.audioWorklet.addModule("/audio-processor.js");
+      const stream = await navigator.mediaDevices.getUserMedia({ 
+        audio: {
+          sampleRate: AUDIO_SAMPLE_RATE,
+          channelCount: 1,
+        }
+      });
+      mediaStreamRef.current = stream;
 
-      const workletNode = new AudioWorkletNode(audioContextRef.current, "audio-processor");
-      audioWorkletNodeRef.current = workletNode;
+      audioContextRef.current = new (window.AudioContext || (window as any).webkitAudioContext)({
+        sampleRate: AUDIO_SAMPLE_RATE,
+      });
 
-      mediaStreamSourceRef.current = audioContextRef.current.createMediaStreamSource(stream);
-      mediaStreamSourceRef.current.connect(workletNode);
+      const blob = new Blob([workletCode], { type: 'application/javascript' });
+      workletUrl = URL.createObjectURL(blob);
+
+      await audioContextRef.current.audioWorklet.addModule(workletUrl);
+
+      const workletNode = new AudioWorkletNode(audioContextRef.current, 'audio-processor');
+
+      const source = audioContextRef.current.createMediaStreamSource(stream);
+      source.connect(workletNode);
 
       workletNode.port.onmessage = (event) => {
-        if (event.data.audioData) {
-          sendAudioToGemini(event.data.audioData);
+        const float32Audio = event.data as Float32Array;
+        
+        const pcm16Data = new Int16Array(float32Audio.length);
+        for (let i = 0; i < float32Audio.length; i++) {
+          const s = Math.max(-1, Math.min(1, float32Audio[i]));
+          pcm16Data[i] = s < 0 ? s * 0x8000 : s * 0x7FFF;
         }
+
+        let binary = "";
+        const bytes = new Uint8Array(pcm16Data.buffer);
+        for (let i = 0; i < bytes.byteLength; i++) {
+          binary += String.fromCharCode(bytes[i]);
+        }
+        const base64AudioData = btoa(binary);
+
+        sendAudioToGemini(base64AudioData);
       };
 
       wsRef.current = new WebSocket(WEBSOCKET_URL);
@@ -142,7 +186,6 @@ export const useLiveInterview = () => {
         wsRef.current?.send(JSON.stringify(setupMessage));
       };
 
-      let currentAiMessage = "";
       let newAiMessage = true;
 
       wsRef.current.onmessage = (event) => {
@@ -166,16 +209,11 @@ export const useLiveInterview = () => {
         }
         
         if (response.realtimeInputFeedback?.speechDetected) {
-           // User is speaking, clear AI audio queue
            audioQueueRef.current = [];
-           if (audioContextRef.current) {
-                // This is a more complex operation, for now we just clear the queue
-           }
         }
 
         if(response.serverContent?.endOfResponse) {
           newAiMessage = true;
-          currentAiMessage = "";
           setAiStatus("listening");
         }
       };
@@ -191,7 +229,8 @@ export const useLiveInterview = () => {
       };
 
       wsRef.current.onclose = () => {
-        stream.getTracks().forEach((track) => track.stop());
+        URL.revokeObjectURL(workletUrl);
+        mediaStreamRef.current?.getTracks().forEach((track) => track.stop());
         audioContextRef.current?.close();
       };
     } catch (error) {
@@ -203,6 +242,7 @@ export const useLiveInterview = () => {
       });
       setAiStatus("idle");
       setInterviewStatus("idle");
+       if (workletUrl) URL.revokeObjectURL(workletUrl);
     }
   }, [setInterviewStatus, setAiStatus, sendAudioToGemini, toast, jobDescription, resume, addTranscriptItem, updateLastTranscriptItem, playNextInQueue]);
 
