@@ -33,6 +33,7 @@ export const useLiveInterview = () => {
     transcript,
     addTranscriptItem,
     updateLastTranscriptItem,
+    aiStatus,
     setAiStatus,
     setInterviewStatus,
     setFeedback,
@@ -40,24 +41,25 @@ export const useLiveInterview = () => {
   const { toast } = useToast();
 
   const [isMuted, setIsMuted] = useState(false);
-  const [isSpeaking, setIsSpeaking] = useState(false);
+  const isSpeaking = aiStatus === 'speaking';
   const wsRef = useRef<WebSocket | null>(null);
   const audioContextRef = useRef<AudioContext | null>(null);
   const mediaStreamRef = useRef<MediaStream | null>(null);
   const audioQueueRef = useRef<string[]>([]);
   const isPlayingRef = useRef(false);
 
-  // Effect to track when the AI is speaking based on the audio queue
-  useEffect(() => {
-    setIsSpeaking(audioQueueRef.current.length > 0 || isPlayingRef.current);
-  }, [transcript]);
-
   const playNextInQueue = useCallback(async () => {
     if (isPlayingRef.current || audioQueueRef.current.length === 0) {
+      if (!isPlayingRef.current && aiStatus === 'speaking') {
+        setAiStatus('listening');
+      }
       return;
     }
   
     isPlayingRef.current = true;
+    if (aiStatus !== 'speaking') {
+      setAiStatus('speaking');
+    }
     const base64Audio = audioQueueRef.current.shift();
   
     if (base64Audio && audioContextRef.current) {
@@ -94,27 +96,9 @@ export const useLiveInterview = () => {
       }
     } else {
       isPlayingRef.current = false;
+      playNextInQueue();
     }
-  }, []);
-
-  const sendAudioToGemini = useCallback((base64AudioData: string) => {
-    if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN && !isMuted) {
-      const clientContentMessage = {
-        realtimeInput: {
-          mediaChunks: [
-            {
-              mimeType: `audio/pcm;rate=${AUDIO_SAMPLE_RATE}`,
-              data: base64AudioData,
-            },
-          ],
-        },
-      };
-      wsRef.current.send(JSON.stringify(clientContentMessage));
-      if (!isSpeaking) {
-        setAiStatus("listening");
-      }
-    }
-  }, [isMuted, setAiStatus, isSpeaking]);
+  }, [aiStatus, setAiStatus]);
 
   const startInterview = useCallback(async () => {
     setInterviewStatus("in-progress");
@@ -160,11 +144,27 @@ export const useLiveInterview = () => {
         }
         const base64AudioData = btoa(binary);
 
-        sendAudioToGemini(base64AudioData);
+        if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN && !isMuted) {
+          const clientContentMessage = {
+            realtimeInput: {
+              mediaChunks: [
+                {
+                  mimeType: `audio/pcm;rate=${AUDIO_SAMPLE_RATE}`,
+                  data: base64AudioData,
+                },
+              ],
+            },
+          };
+          wsRef.current.send(JSON.stringify(clientContentMessage));
+          if (aiStatus !== 'speaking') {
+            setAiStatus("listening");
+          }
+        }
       };
 
-      wsRef.current = new WebSocket(WEBSOCKET_URL);
-      wsRef.current.onopen = () => {
+      const ws = new WebSocket(WEBSOCKET_URL);
+      
+      ws.onopen = () => {
         const setupMessage = {
           setup: {
             model: "models/gemini-2.5-flash-native-audio-latest",
@@ -183,12 +183,14 @@ export const useLiveInterview = () => {
             },
           },
         };
-        wsRef.current?.send(JSON.stringify(setupMessage));
+        ws.send(JSON.stringify(setupMessage));
       };
+
+      wsRef.current = ws;
 
       let newAiMessage = true;
 
-      wsRef.current.onmessage = (event) => {
+      ws.onmessage = (event) => {
         const response = JSON.parse(event.data);
         if (response.serverContent?.content?.parts) {
             const part = response.serverContent.content.parts[0];
@@ -204,7 +206,6 @@ export const useLiveInterview = () => {
 
         if (response.serverContent?.content?.audio) {
             audioQueueRef.current.push(response.serverContent.content.audio);
-            setAiStatus("speaking");
             playNextInQueue();
         }
         
@@ -218,7 +219,7 @@ export const useLiveInterview = () => {
         }
       };
 
-      wsRef.current.onerror = (error) => {
+      ws.onerror = (error) => {
         console.error("WebSocket Error:", error);
         toast({
           title: "Connection Error",
@@ -228,8 +229,8 @@ export const useLiveInterview = () => {
         setAiStatus("idle");
       };
 
-      wsRef.current.onclose = () => {
-        URL.revokeObjectURL(workletUrl);
+      ws.onclose = () => {
+        if (workletUrl) URL.revokeObjectURL(workletUrl);
         mediaStreamRef.current?.getTracks().forEach((track) => track.stop());
         audioContextRef.current?.close();
       };
@@ -244,7 +245,7 @@ export const useLiveInterview = () => {
       setInterviewStatus("idle");
        if (workletUrl) URL.revokeObjectURL(workletUrl);
     }
-  }, [setInterviewStatus, setAiStatus, sendAudioToGemini, toast, jobDescription, resume, addTranscriptItem, updateLastTranscriptItem, playNextInQueue]);
+  }, [setInterviewStatus, setAiStatus, toast, jobDescription, resume, addTranscriptItem, updateLastTranscriptItem, playNextInQueue, isMuted, aiStatus]);
 
   const endInterview = useCallback(async () => {
     setAiStatus("thinking");
