@@ -8,49 +8,66 @@ import type {
 } from "@/lib/types";
 import type { GenerateInterviewFeedbackOutput } from "@/ai/flows/generate-interview-feedback";
 
-const DEFAULT_JOB_DESCRIPTION = `Junior Full Stack Developer
+const DEFAULT_JOB_DESCRIPTION = `Job Title: IT Project Manager
+Location: [City, State / Remote]
+Job Type: Full-Time
 
-Experience: 1-2 years
-Location: Remote
+Job Summary:
+We are seeking a highly organized and results-driven IT Project Manager to lead and oversee technology projects from conception to completion. In this role, you will coordinate cross-functional teams, manage project schedules, and ensure that all IT initiatives are delivered on time, within scope, and within budget.
 
-We are looking for a motivated Junior Full Stack Developer to join our team. The ideal candidate will have experience with React for the frontend, Node.js for the backend, and familiarity with Firebase for database and hosting services.
+Key Responsibilities:
 
-Responsibilities:
-- Develop and maintain web applications using React and Node.js.
-- Collaborate with designers and other developers.
-- Work with Firebase services like Firestore and Cloud Functions.
-- Write clean, maintainable, and efficient code.
+Lead the planning, execution, and delivery of IT projects (e.g., software development, infrastructure upgrades, system integrations).
+Define project scope, goals, and deliverables in collaboration with senior management and stakeholders.
+Develop comprehensive project plans, including timelines, resource allocation, and budget estimates.
+Manage and coordinate cross-functional teams, including software developers, QA engineers, and system administrators.
+Identify, track, and mitigate project risks and resolve any roadblocks.
+Facilitate daily stand-ups, sprint planning, and retrospective meetings (if using Agile methodologies).
+Provide regular project status updates to stakeholders and executives.
+Requirements & Qualifications:
 
-Requirements:
-- 1-2 years of experience in web development.
-- Proficiency in JavaScript, React, and Node.js.
-- Experience with RESTful APIs.
-- Basic understanding of Firebase or other NoSQL databases.
-- Good problem-solving skills and a can-do attitude.`;
+Bachelor’s degree in Information Technology, Computer Science, Business Administration, or a related field.
+3–5 years of proven experience in IT project management.
+Strong understanding of project management methodologies (Agile, Scrum, Waterfall).
+Proficiency with project management tools (e.g., Jira, Asana, MS Project, Confluence).
+Excellent leadership, communication, and problem-solving skills.
+PMP (Project Management Professional) or CSM (Certified ScrumMaster) certification is highly preferred.`;
 
-const DEFAULT_RESUME = `Jane Doe
-(123) 456-7890 | jane.doe@email.com | linkedin.com/in/janedoe
+const DEFAULT_RESUME = `Alex Taylor
+San Francisco, CA | (555) 123-4567 | alex.taylor@email.com | linkedin.com/in/alextaylor-itpm
 
-Summary
-Aspiring Full Stack Developer with 1.5 years of hands-on experience in building and maintaining web applications. Proficient in the MERN stack with a strong focus on creating responsive and user-friendly interfaces. Eager to contribute to a dynamic team and grow my skills in a collaborative environment.
+Professional Summary
+Detail-oriented and certified IT Project Manager with over 5 years of experience leading complex technology initiatives. Proven track record of delivering software and infrastructure projects on time and under budget. Adept at bridging the gap between technical teams and business stakeholders, utilizing Agile and Scrum methodologies to drive efficiency, mitigate risks, and achieve strategic business goals.
 
-Experience
-Web Developer Intern | Tech Solutions Inc. | June 2023 - Present
-- Contributed to the development of a client-facing dashboard using React and Redux, improving user engagement by 15%.
-- Built and integrated RESTful APIs using Node.js and Express to support new application features.
-- Utilized Firebase for real-time data synchronization and user authentication in a project application.
-- Participated in agile development cycles, including sprint planning and daily stand-ups.
+Core Competencies
 
-Projects
-E-commerce Store | Personal Project
-- Developed a full-stack e-commerce website using React, Node.js, and MongoDB.
-- Implemented features like product catalog, shopping cart, and user authentication.
+Methodologies: Agile, Scrum, Waterfall, SDLC
+Tools: Jira, MS Project, MS Excel
+Skills: Budget Management, Risk Mitigation, Stakeholder Communication, Resource Allocation, Cross-functional Leadership
+Professional Experience
 
-Skills
-- Frontend: React, Redux, HTML5, CSS3, Tailwind CSS
-- Backend: Node.js, Express.js
-- Databases: MongoDB, Firebase (Firestore)
-- Tools: Git, Webpack, npm`;
+IT Project Manager
+TechSolutions Inc., San Francisco, CA | June 2022 – Present
+
+Direct the full project lifecycle for enterprise-level software development and cloud migration projects with budgets exceeding $500,000.
+Lead cross-functional teams of 15+ members, including developers, QA testers, and UX/UI designers.
+Successfully delivered a major CRM integration project 2 weeks ahead of schedule, resulting in a 20% increase in sales team productivity.
+Facilitate Agile ceremonies, including daily stand-ups, sprint planning, and retrospectives, improving team delivery speed by 15%.
+Identify and mitigate project risks, communicating status updates and key metrics to C-level executives weekly.
+Junior IT Project Manager / Business Analyst
+InnovateTech, San Jose, CA | August 2019 – May 2022
+
+Assisted senior project managers in tracking project milestones, deliverables, and resource allocation using Jira and MS Project.
+Gathered and documented technical requirements from business stakeholders to ensure alignment with IT capabilities.
+Coordinated the rollout of a company-wide hardware upgrade, managing vendor relationships and minimizing downtime for 300+ employees.
+Created and maintained comprehensive project documentation, ensuring compliance with internal IT governance standards.
+Education
+Bachelor of Science in Information Technology
+University of California, Berkeley | Graduated: May 2019
+
+Certifications
+
+Project Management Professional (PMP) – Project Management Institute (PMI)`;
 
 interface InterviewContextType {
   jobDescription: string;

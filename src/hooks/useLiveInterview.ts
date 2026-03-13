@@ -5,13 +5,14 @@ import { useInterview } from "./useInterview";
 import { useToast } from "./use-toast";
 import { generateInterviewFeedback } from "@/ai/flows/generate-interview-feedback";
 
-const API_KEY = "AIzaSyBl-LHuzOv31rw_6DdFJYw0RJevZO_nONE";
 
-const WEBSOCKET_URL = `wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent?key=${API_KEY}`;
+const WEBSOCKET_URL = `wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent?key=AIzaSyBl-LHuzOv31rw_6DdFJYw0RJevZO_nONE`;
 const AUDIO_SAMPLE_RATE = 24000;
 
+// We only use the Worklet for the Microphone Input now.
+// Output is handled by the native AudioBufferSourceNode scheduler.
 const workletCode = `
-  class AudioProcessor extends AudioWorkletProcessor {
+  class InputProcessor extends AudioWorkletProcessor {
     constructor() {
       super();
       this.buffer = new Float32Array(2048);
@@ -32,7 +33,7 @@ const workletCode = `
       return true;
     }
   }
-  registerProcessor('audio-processor', AudioProcessor);
+  registerProcessor('input-processor', InputProcessor);
 `;
 
 export const useLiveInterview = () => {
@@ -42,8 +43,8 @@ export const useLiveInterview = () => {
     transcript,
     addTranscriptItem,
     updateLastTranscriptItem,
+    aiStatus,
     setAiStatus,
-    interviewStatus,
     setInterviewStatus,
     setFeedback,
   } = useInterview();
@@ -55,91 +56,96 @@ export const useLiveInterview = () => {
   const mediaStreamRef = useRef<MediaStream | null>(null);
   const recognitionRef = useRef<any>(null);
   
-  const activeAudioSourcesRef = useRef<AudioBufferSourceNode[]>([]);
+  // Native Audio Scheduling Refs
   const nextPlayTimeRef = useRef<number>(0);
+  const activeSourcesRef = useRef<AudioBufferSourceNode[]>([]);
   
   const isSetupCompleteRef = useRef(false);
   const isConnectingRef = useRef(false);
   const isTurnInterruptedRef = useRef(false);
   
   const lastSpeakerRef = useRef<string | null>(null);
+  const isThinkingRef = useRef(false); 
+  const transcriptContainerRef = useRef<HTMLDivElement>(null);
 
   const isMutedRef = useRef(isMuted);
   useEffect(() => {
     isMutedRef.current = isMuted;
   }, [isMuted]);
 
-  const interviewStatusRef = useRef(interviewStatus);
   useEffect(() => {
-    interviewStatusRef.current = interviewStatus;
-  }, [interviewStatus]);
+    if (transcriptContainerRef.current) {
+      transcriptContainerRef.current.scrollTop = transcriptContainerRef.current.scrollHeight;
+    }
+  }, [transcript]);
 
   const stopCurrentAudio = useCallback(() => {
-    activeAudioSourcesRef.current.forEach(source => {
-      source.onended = null;
-      try {
-        source.stop();
-      } catch (e) {}
-      source.disconnect();
+    activeSourcesRef.current.forEach(source => {
+      try { source.stop(); } catch (e) {}
     });
-    activeAudioSourcesRef.current = [];
-    nextPlayTimeRef.current = 0;
+    activeSourcesRef.current = [];
+    nextPlayTimeRef.current = 0; // Reset scheduler
   }, []);
 
-  const scheduleAudioChunk = useCallback((base64Audio: string) => {
-    if (!audioContextRef.current || audioContextRef.current.state === 'closed') return;
-    
+  // --- Bulletproof Native Audio Scheduler with Jitter Buffer ---
+  const playAudioChunk = useCallback((base64Audio: string) => {
+    const ctx = audioContextRef.current;
+    if (!ctx) return;
+
     try {
-      const ctx = audioContextRef.current;
       if (ctx.state === 'suspended') {
         ctx.resume();
       }
 
-      const binaryString = atob(base64Audio);
-      const bytes = new Uint8Array(binaryString.length);
-      for (let i = 0; i < binaryString.length; i++) {
-        bytes[i] = binaryString.charCodeAt(i);
+      // 1. Decode Base64 to Float32 Array
+      const binary = atob(base64Audio);
+      const len = binary.length;
+      const bytes = new Uint8Array(len);
+      for (let i = 0; i < len; i++) {
+        bytes[i] = binary.charCodeAt(i);
       }
-      const pcm16Data = new Int16Array(bytes.buffer);
-
-      const float32Data = new Float32Array(pcm16Data.length);
-      for (let i = 0; i < pcm16Data.length; i++) {
-        float32Data[i] = pcm16Data[i] / 32767.0;
+      
+      const int16Array = new Int16Array(bytes.buffer, 0, Math.floor(len / 2));
+      const float32Data = new Float32Array(int16Array.length);
+      for (let i = 0; i < int16Array.length; i++) {
+        float32Data[i] = int16Array[i] / 32768;
       }
 
-      const audioBuffer = ctx.createBuffer(1, float32Data.length, AUDIO_SAMPLE_RATE);
-      audioBuffer.getChannelData(0).set(float32Data);
+      // 2. Create AudioBuffer
+      const buffer = ctx.createBuffer(1, float32Data.length, AUDIO_SAMPLE_RATE);
+      buffer.getChannelData(0).set(float32Data);
 
+      // 3. Setup Source Node
       const source = ctx.createBufferSource();
-      source.buffer = audioBuffer;
+      source.buffer = buffer;
       source.connect(ctx.destination);
 
       const currentTime = ctx.currentTime;
+      
+      // 4. Jitter Buffer Logic: 
+      // If the scheduled time is in the past, it means we starved (network lag).
+      // We push the start time 150ms into the future to build up a safe queue.
       if (nextPlayTimeRef.current < currentTime) {
-        nextPlayTimeRef.current = currentTime + 0.05; 
+        nextPlayTimeRef.current = currentTime + 0.15; 
       }
 
+      // 5. Schedule exactly at the calculated time to prevent sparking/gaps
       source.start(nextPlayTimeRef.current);
-      nextPlayTimeRef.current += audioBuffer.duration;
+      nextPlayTimeRef.current += buffer.duration;
 
-      activeAudioSourcesRef.current.push(source);
-      setAiStatus('speaking');
-
+      // 6. Track active sources to handle interruptions and AI status
+      activeSourcesRef.current.push(source);
       source.onended = () => {
-        activeAudioSourcesRef.current = activeAudioSourcesRef.current.filter(s => s !== source);
-        if (activeAudioSourcesRef.current.length === 0) {
-          setAiStatus('listening');
+        activeSourcesRef.current = activeSourcesRef.current.filter(s => s !== source);
+        if (activeSourcesRef.current.length === 0) {
+          // If all queued audio has finished playing, AI is done speaking
+          setAiStatus((prev: string) => (prev === 'speaking' ? 'listening' : prev));
         }
       };
-    } catch (error: any) {
-      console.error("Error scheduling audio chunk:", error);
-      toast({
-          title: "Audio Playback Error",
-          description: `[${error.name}] ${error.message}`,
-          variant: "destructive"
-      });
+    } catch (error) {
+      console.error("Error playing audio chunk:", error);
     }
-  }, [setAiStatus, toast]);
+  }, [setAiStatus]);
 
   const startInterview = useCallback(async () => {
     if (isConnectingRef.current || wsRef.current) return;
@@ -149,7 +155,10 @@ export const useLiveInterview = () => {
     setAiStatus("thinking");
     isSetupCompleteRef.current = false;
     isTurnInterruptedRef.current = false;
+    
     lastSpeakerRef.current = null;
+    isThinkingRef.current = false;
+    nextPlayTimeRef.current = 0;
     
     let workletUrl = "";
     
@@ -169,31 +178,28 @@ export const useLiveInterview = () => {
       if (SpeechRecognition) {
         const recognition = new SpeechRecognition();
         recognition.continuous = true;
-        recognition.interimResults = true; // Use interim for faster feedback
+        recognition.interimResults = false;
         recognition.lang = 'en-US';
 
         recognition.onresult = (event: any) => {
-           let interimTranscript = '';
-           for (let i = event.resultIndex; i < event.results.length; ++i) {
-             const transcriptChunk = event.results[i][0].transcript;
-             if (event.results[i].isFinal) {
-                if (transcriptChunk.trim()) {
-                    if (lastSpeakerRef.current !== "Interviewee") {
-                      addTranscriptItem({ speaker: "Interviewee", text: transcriptChunk.trim() });
-                      lastSpeakerRef.current = "Interviewee";
-                    } else {
-                      updateLastTranscriptItem(transcriptChunk.trim());
-                    }
+          for (let i = event.resultIndex; i < event.results.length; ++i) {
+            if (event.results[i].isFinal) {
+              const text = event.results[i][0].transcript.trim();
+              if (text) {
+                if (lastSpeakerRef.current !== "Interviewee") {
+                  addTranscriptItem({ speaker: "Interviewee", text: text });
+                  lastSpeakerRef.current = "Interviewee";
+                } else {
+                  updateLastTranscriptItem(" " + text);
                 }
-             }
-           }
+              }
+            }
+          }
         };
 
         recognition.onend = () => {
-          if (interviewStatusRef.current === 'in-progress') {
-            try { recognition.start(); } catch (e) {
-                console.error("Speech recognition restart failed", e);
-            }
+          if (isSetupCompleteRef.current && wsRef.current?.readyState === WebSocket.OPEN) {
+            try { recognition.start(); } catch (e) {}
           }
         };
 
@@ -201,50 +207,82 @@ export const useLiveInterview = () => {
         recognition.start();
       }
 
-      const audioContext = new (window.AudioContext || (window as any).webkitAudioContext)({
-        sampleRate: AUDIO_SAMPLE_RATE,
-      });
+      // Initialize Audio Context
+      let audioContext: AudioContext;
+      try {
+        audioContext = new (window.AudioContext || (window as any).webkitAudioContext)({
+          sampleRate: AUDIO_SAMPLE_RATE,
+        });
+      } catch (e) {
+        audioContext = new (window.AudioContext || (window as any).webkitAudioContext)();
+      }
       audioContextRef.current = audioContext;
 
       const blob = new Blob([workletCode], { type: 'application/javascript' });
       workletUrl = URL.createObjectURL(blob);
-
       await audioContext.audioWorklet.addModule(workletUrl);
 
-      const workletNode = new AudioWorkletNode(audioContext, 'audio-processor');
+      // Setup Input Worklet (Microphone only)
+      const inputNode = new AudioWorkletNode(audioContext, 'input-processor');
       const source = audioContext.createMediaStreamSource(stream);
-      source.connect(workletNode);
+      source.connect(inputNode);
 
       const ws = new WebSocket(WEBSOCKET_URL);
       wsRef.current = ws;
 
       ws.onopen = () => {
-        // Step 1: Send a minimal setup message.
         const setupMessage = {
           setup: {
             model: "models/gemini-2.5-flash-native-audio-latest",
+            systemInstruction: {
+              parts: [
+                {
+                  text: `You are an expert technical interviewer named Echo. Your persona is professional, encouraging, and clear.
+
+                  Your primary goal is to conduct a realistic mock interview for the IT role described below, based on the candidate's provided resume. Ask a mix of behavioral, technical, and situational questions. Start with easier questions and gradually increase the difficulty. Provide smooth transitions between questions.
+
+                  CRITICAL RULES FOR YOUR OUTPUT:
+                  1.  **FIRST MESSAGE ONLY**: Start the interview *immediately* by introducing yourself and asking the first question. Do not wait for the user to speak first. For example: "Hello, I'm Echo, your AI interviewer. It's great to connect with you. Let's start with a question about your background. Can you walk me through your resume?"
+                  2.  **RESPONSE MODALITY**: You MUST output both TEXT and AUDIO for every response.
+                  3.  **SPOKEN WORDS ONLY**: Your output must contain *only* the exact words you are speaking to the candidate.
+                  4.  **NO META-TEXT**: Absolutely no system instructions, internal thoughts, reasoning steps, status indicators, or XML-like tags (e.g., no `<think>`, `</think>`). Do not use asterisks or brackets for actions (e.g., no *smiles* or [pauses]).
+                  5.  **TURN MANAGEMENT**: After you finish asking a question, immediately cease sending audio and text and wait for the user's response. Do not send silent audio.
+
+                  ## Job Description:
+                  ${jobDescription}
+
+                  ## Candidate Resume:
+                  ${resume}`,
+                },
+              ],
+            },
             generationConfig: {
               responseModalities: ["AUDIO", "TEXT"],
+              speechConfig: {
+                voiceConfig: { prebuiltVoiceConfig: { voiceName: "Aoede" } },
+              },
             },
           },
         };
         ws.send(JSON.stringify(setupMessage));
       };
 
-      workletNode.port.onmessage = (event) => {
+      inputNode.port.onmessage = (event) => {
         if (!isSetupCompleteRef.current || !wsRef.current || wsRef.current.readyState !== WebSocket.OPEN || isMutedRef.current) {
           return;
         }
 
         const float32Audio = event.data as Float32Array;
-        const pcm16Data = new Int16Array(float32Audio.length);
+        const buffer = new ArrayBuffer(float32Audio.length * 2);
+        const view = new DataView(buffer);
+        
         for (let i = 0; i < float32Audio.length; i++) {
           const s = Math.max(-1, Math.min(1, float32Audio[i]));
-          pcm16Data[i] = s < 0 ? s * 0x8000 : s * 0x7FFF;
+          view.setInt16(i * 2, s < 0 ? s * 0x8000 : s * 0x7FFF, true);
         }
 
         let binary = "";
-        const bytes = new Uint8Array(pcm16Data.buffer);
+        const bytes = new Uint8Array(buffer);
         const chunkSize = 0x8000; 
         for (let i = 0; i < bytes.length; i += chunkSize) {
           binary += String.fromCharCode.apply(null, Array.from(bytes.subarray(i, i + chunkSize)));
@@ -261,7 +299,7 @@ export const useLiveInterview = () => {
             ],
           },
         };
-        ws.current.send(JSON.stringify(clientContentMessage));
+        wsRef.current.send(JSON.stringify(clientContentMessage));
       };
 
       ws.onmessage = async (event) => {
@@ -272,43 +310,10 @@ export const useLiveInterview = () => {
           }
 
           const response = JSON.parse(messageData);
-
-          if (response.error) {
-            toast({
-                title: "AI Error",
-                description: `Code: ${response.error.code}. ${response.error.message}`,
-                variant: "destructive",
-                duration: 9000,
-             });
-             return;
-          }
           
           if (response.setupComplete) {
-            // Step 2: Server is configured. Now send the initial prompt.
             isSetupCompleteRef.current = true;
-            setAiStatus("thinking");
-
-            const initialTurn = {
-                clientContent: {
-                    turn: {
-                        role: "user",
-                        parts: [{
-                            text: `You are an expert technical interviewer named Echo. Your task is to conduct a professional mock interview based on the provided job description and candidate resume.
-- Start by briefly introducing yourself as an AI interviewer from EchoHire.
-- Ask your first interview question immediately. Do not wait for the user to speak first.
-- Keep your responses concise and professional.
-- Do not use markdown or any special formatting in your responses.
-
-Here is the job description:
-${jobDescription}
-
-Here is the candidate's resume:
-${resume}`
-                        }]
-                    }
-                }
-            };
-            ws.send(JSON.stringify(initialTurn));
+            // The first message is now sent from the prompt, so no kickoff message is needed.
             return;
           }
 
@@ -322,8 +327,7 @@ ${resume}`
 
           if (response.serverContent?.turnComplete) {
             isTurnInterruptedRef.current = false;
-            lastSpeakerRef.current = null;
-            setAiStatus('listening');
+            lastSpeakerRef.current = null; 
           }
 
           const parts = response.serverContent?.modelTurn?.parts;
@@ -332,7 +336,33 @@ ${resume}`
 
               for (const part of parts) {
                   if (part.text) {
-                      let textChunk = part.text.replace(/[.*?]|\*.*?\*/g, "");
+                      let textChunk = part.text;
+
+                      if (isThinkingRef.current) {
+                        const closeIndex = textChunk.indexOf("</think>");
+                        if (closeIndex !== -1) {
+                          isThinkingRef.current = false;
+                          textChunk = textChunk.substring(closeIndex + 8);
+                        } else {
+                          textChunk = ""; 
+                        }
+                      }
+
+                      while (textChunk.includes("<think>")) {
+                        const openIndex = textChunk.indexOf("<think>");
+                        const closeIndex = textChunk.indexOf("</think>", openIndex);
+
+                        if (closeIndex !== -1) {
+                          textChunk = textChunk.substring(0, openIndex) + textChunk.substring(closeIndex + 8);
+                        } else {
+                          isThinkingRef.current = true;
+                          textChunk = textChunk.substring(0, openIndex);
+                          break;
+                        }
+                      }
+
+                      textChunk = textChunk.replace(/[.*?]/g, "");
+
                       if (textChunk) {
                           if (lastSpeakerRef.current !== "AI Interviewer") {
                               if (textChunk.trim().length > 0) {
@@ -347,60 +377,51 @@ ${resume}`
                   
                   if (part.inlineData?.data) {
                       if (!isTurnInterruptedRef.current) {
-                          scheduleAudioChunk(part.inlineData.data);
+                          setAiStatus("speaking");
+                          playAudioChunk(part.inlineData.data);
                       }
                   }
               }
           }
-        } catch (e: any) {
+        } catch (e) {
           console.error("Error parsing WebSocket message:", e);
-          toast({
-              title: "Error Processing AI Response",
-              description: `[${e.name}] ${e.message}`,
-              variant: "destructive"
-          })
         }
       };
 
       ws.onerror = (error) => {
         console.error("WebSocket Error:", error);
-        toast({ title: "Connection Error", description: "Could not connect. Check the console for details.", variant: "destructive" });
+        toast({ title: "Connection Error", description: "Could not connect to the interview service.", variant: "destructive" });
         setAiStatus("idle");
       };
 
       ws.onclose = (event) => {
         isConnectingRef.current = false;
         if (workletUrl) URL.revokeObjectURL(workletUrl);
-        if (interviewStatusRef.current === 'in-progress') {
-             toast({
-                title: "Connection To AI Closed",
+        // Only show toast if it was an unexpected closure
+        if (event.code !== 1000) {
+            toast({
+                title: 'Connection To AI Closed',
                 description: `Code: ${event.code}. The interview cannot continue. This may be due to an invalid API key or a network issue.`,
-                variant: "destructive",
-                duration: 9000,
-             });
-             setAiStatus("idle");
-             // Don't auto-finish, let the user decide.
+                variant: 'destructive',
+            });
         }
       };
-    } catch (error: any) {
+    } catch (error) {
       isConnectingRef.current = false;
       console.error("Error starting interview:", error);
-      toast({ title: "Startup Error", description: `[${error.name}] ${error.message}`, variant: "destructive" });
+      toast({ title: "Microphone Error", description: "Could not access the microphone. Please check permissions.", variant: "destructive" });
       setAiStatus("idle");
       setInterviewStatus("idle");
     }
-  }, [setInterviewStatus, setAiStatus, toast, jobDescription, resume, addTranscriptItem, updateLastTranscriptItem, scheduleAudioChunk, stopCurrentAudio, setFeedback]);
+  }, [setInterviewStatus, setAiStatus, toast, jobDescription, resume, addTranscriptItem, updateLastTranscriptItem, playAudioChunk, stopCurrentAudio]);
 
   const endInterview = useCallback(async () => {
-    setInterviewStatus("finished");
     setAiStatus("thinking");
-    
     stopCurrentAudio();
 
     if (wsRef.current) {
-      wsRef.current.onmessage = null;
-      wsRef.current.onclose = null; // Prevent onclose toast from firing on manual end
-      wsRef.current.close();
+      wsRef.current.onclose = null; // prevent close toast from showing on manual end
+      wsRef.current.close(1000, "Interview ended by user");
       wsRef.current = null;
     }
     if (audioContextRef.current?.state !== 'closed') {
@@ -418,15 +439,16 @@ ${resume}`
     }
     
     isConnectingRef.current = false;
+    setInterviewStatus("finished");
     
     toast({ title: "Interview Ended", description: "Generating your feedback report..." });
     
     try {
       const feedbackResult = await generateInterviewFeedback({ jobDescription, resume, transcript });
       setFeedback(feedbackResult);
-    } catch (error: any) {
+    } catch (error) {
       console.error("Error generating feedback:", error);
-      toast({ title: "Feedback Error", description: `[${error.name}] ${error.message}`, variant: "destructive" });
+      toast({ title: "Feedback Error", description: "Could not generate feedback report.", variant: "destructive" });
     }
   }, [jobDescription, resume, transcript, setAiStatus, setInterviewStatus, setFeedback, toast, stopCurrentAudio]);
 
@@ -436,22 +458,19 @@ ${resume}`
 
   useEffect(() => {
     return () => {
-      // Cleanup on unmount
+      stopCurrentAudio();
       if (wsRef.current) {
-        wsRef.current.close();
+         wsRef.current.onclose = null;
+         wsRef.current.close(1000, "Component unmounting");
       }
-       if (audioContextRef.current?.state !== 'closed') {
-         audioContextRef.current?.close();
-       }
-       if (mediaStreamRef.current) {
-         mediaStreamRef.current.getTracks().forEach(t => t.stop());
-       }
+      if (audioContextRef.current?.state !== 'closed') audioContextRef.current?.close();
+      if (mediaStreamRef.current) mediaStreamRef.current.getTracks().forEach(t => t.stop());
       if (recognitionRef.current) {
         recognitionRef.current.onend = null;
         try { recognitionRef.current.stop(); } catch(e) {}
       }
     };
-  }, []);
+  }, [stopCurrentAudio]);
 
-  return { startInterview, endInterview, isMuted, toggleMute };
+  return { startInterview, endInterview, isMuted, toggleMute, transcriptContainerRef };
 };
