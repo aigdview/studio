@@ -136,10 +136,15 @@ export const useLiveInterview = () => {
           setAiStatus('listening');
         }
       };
-    } catch (error) {
+    } catch (error: any) {
       console.error("Error scheduling audio chunk:", error);
+      toast({
+          title: "Audio Playback Error",
+          description: error.message || "An issue occurred while trying to play audio.",
+          variant: "destructive"
+      });
     }
-  }, [setAiStatus]);
+  }, [setAiStatus, toast]);
 
   const startInterview = useCallback(async () => {
     if (isConnectingRef.current || wsRef.current) return;
@@ -382,14 +387,19 @@ ${resume}`,
                   }
               }
           }
-        } catch (e) {
+        } catch (e: any) {
           console.error("Error parsing WebSocket message:", e);
+          toast({
+              title: "Error Processing AI Response",
+              description: e.message || "An issue occurred while processing the AI's response.",
+              variant: "destructive"
+          })
         }
       };
 
       ws.onerror = (error) => {
         console.error("WebSocket Error:", error);
-        toast({ title: "Connection Error", description: "Could not connect to the interview service.", variant: "destructive" });
+        toast({ title: "Connection Error", description: "Could not connect. Check the console for details.", variant: "destructive" });
         setAiStatus("idle");
       };
 
@@ -397,10 +407,10 @@ ${resume}`,
         isConnectingRef.current = false;
         if (workletUrl) URL.revokeObjectURL(workletUrl);
       };
-    } catch (error) {
+    } catch (error: any) {
       isConnectingRef.current = false;
       console.error("Error starting interview:", error);
-      toast({ title: "Microphone Error", description: "Could not access the microphone. Please check permissions.", variant: "destructive" });
+      toast({ title: "Startup Error", description: error.message || "Could not start the interview. Please check permissions and console.", variant: "destructive" });
       setAiStatus("idle");
       setInterviewStatus("idle");
     }
@@ -438,9 +448,9 @@ ${resume}`,
     try {
       const feedbackResult = await generateInterviewFeedback({ jobDescription, resume, transcript });
       setFeedback(feedbackResult);
-    } catch (error) {
+    } catch (error: any) {
       console.error("Error generating feedback:", error);
-      toast({ title: "Feedback Error", description: "Could not generate feedback report.", variant: "destructive" });
+      toast({ title: "Feedback Error", description: error.message || "Could not generate feedback report.", variant: "destructive" });
     }
   }, [jobDescription, resume, transcript, setAiStatus, setInterviewStatus, setFeedback, toast, stopCurrentAudio]);
 
