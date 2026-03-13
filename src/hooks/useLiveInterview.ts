@@ -5,7 +5,7 @@ import { useInterview } from "./useInterview";
 import { useToast } from "./use-toast";
 import { generateInterviewFeedback } from "@/ai/flows/generate-interview-feedback";
 
-const WEBSOCKET_URL = `wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent?key=AIzaSyBl-LHuzOv31rw_6DdFJYw0RJevZO_nONE`;
+const WEBSOCKET_URL = `wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent?key=${process.env.NEXT_PUBLIC_GEMINI_API_KEY}`;
 const AUDIO_SAMPLE_RATE = 16000;
 
 // This worklet is for SENDING audio data from the microphone
@@ -42,22 +42,25 @@ export function useLiveInterview() {
   const wsRef = useRef<WebSocket | null>(null);
   const audioContextRef = useRef<AudioContext | null>(null);
   const mediaStreamRef = useRef<MediaStream | null>(null);
-  const recognitionRef = useRef<any>(null);
+  const recognitionRef = useRef<any>(null); // For interviewee speech-to-text
   const transcriptContainerRef = useRef<HTMLDivElement>(null);
 
   const audioQueueRef = useRef<string[]>([]);
   const isPlayingRef = useRef(false);
   const isSetupCompleteRef = useRef(false);
   const lastSpeakerRef = useRef<string | null>(null);
+  const activeAudioSourceRef = useRef<AudioBufferSourceNode | null>(null);
 
   const isMutedRef = useRef(isMuted);
   useEffect(() => {
     isMutedRef.current = isMuted;
   }, [isMuted]);
 
+  // Autoscroll transcript
   useEffect(() => {
     if (transcriptContainerRef.current) {
-      transcriptContainerRef.current.scrollTop = transcriptContainerRef.current.scrollHeight;
+      const el = transcriptContainerRef.current;
+      el.scrollTop = el.scrollHeight;
     }
   }, [transcript]);
 
@@ -88,20 +91,22 @@ export function useLiveInterview() {
           pcm16Data[i] = (byte2 << 8) | byte1;
         }
   
-        // Gemini audio is 24kHz, but we request 16kHz for mic. We'll play it at 24kHz.
-        const audioBuffer = audioContextRef.current.createBuffer(1, pcm16Data.length, 24000);
-        
         const float32Data = new Float32Array(pcm16Data.length);
         for (let i = 0; i < pcm16Data.length; i++) {
           float32Data[i] = pcm16Data[i] / 32767.0;
         }
+  
+        // Gemini audio is 24kHz, but we request 16kHz for mic. We'll play it at 24kHz.
+        const audioBuffer = audioContextRef.current.createBuffer(1, float32Data.length, 24000);
         audioBuffer.getChannelData(0).set(float32Data);
   
         const source = audioContextRef.current.createBufferSource();
+        activeAudioSourceRef.current = source;
         source.buffer = audioBuffer;
         source.connect(audioContextRef.current.destination);
   
         source.onended = () => {
+          activeAudioSourceRef.current = null;
           isPlayingRef.current = false;
           playNextInQueue();
         };
@@ -134,6 +139,9 @@ export function useLiveInterview() {
         audio: {
           sampleRate: AUDIO_SAMPLE_RATE,
           channelCount: 1,
+          echoCancellation: true,
+          noiseSuppression: true,
+          autoGainControl: true,
         }
        });
 
@@ -168,7 +176,7 @@ export function useLiveInterview() {
           };
 
           recognitionRef.current.onend = () => {
-              if (isSetupCompleteRef.current) {
+              if (isSetupCompleteRef.current && wsRef.current?.readyState === WebSocket.OPEN) {
                   try { recognitionRef.current.start(); } catch(e) {}
               }
           };
@@ -260,7 +268,7 @@ CONTEXT:
                   addTranscriptItem({ speaker: "AI Interviewer", text: textChunk });
                   lastSpeakerRef.current = "AI Interviewer";
                 } else {
-                  updateLastTranscriptItem(" " + textChunk);
+                  updateLastTranscriptItem(textChunk);
                 }
               }
             }
@@ -278,6 +286,9 @@ CONTEXT:
 
         if (response.serverContent?.interrupted) {
             audioQueueRef.current = [];
+            if(activeAudioSourceRef.current) {
+                activeAudioSourceRef.current.stop();
+            }
             isPlayingRef.current = false;
         }
       };
@@ -289,7 +300,6 @@ CONTEXT:
       };
       ws.onclose = () => {
         if (workletUrl) URL.revokeObjectURL(workletUrl);
-        endInterview();
       };
 
     } catch (error) {
@@ -297,6 +307,7 @@ CONTEXT:
       toast({ title: "Setup Error", description: "Failed to initialize microphone or audio services.", variant: "destructive" });
       endInterview();
     }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [jobDescription, resume, setInterviewStatus, setAiStatus, addTranscriptItem, updateLastTranscriptItem, toast, playNextInQueue]);
 
   const endInterview = useCallback(async () => {
@@ -332,4 +343,3 @@ CONTEXT:
     endInterview
   };
 }
-    
