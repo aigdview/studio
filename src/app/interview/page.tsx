@@ -173,5 +173,3 @@ export default function InterviewPage() {
     </div>
   );
 }
-
-    
