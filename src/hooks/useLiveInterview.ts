@@ -5,7 +5,7 @@ import { useInterview } from "./useInterview";
 import { useToast } from "./use-toast";
 import { generateInterviewFeedback } from "@/ai/flows/generate-interview-feedback";
 
-const WEBSOCKET_URL = `wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent?key=AIzaSyBl-LHuzOv31rw_6DdFJYw0RJevZO_nONE`;
+const WEBSOCKET_URL = `wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent?key=${process.env.NEXT_PUBLIC_GEMINI_API_KEY}`;
 // Changed to 24000 to match Gemini's native audio output rate
 const AUDIO_SAMPLE_RATE = 24000;
 
