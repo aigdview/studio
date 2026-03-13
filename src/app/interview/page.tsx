@@ -116,7 +116,7 @@ export default function InterviewPage() {
                       <div
                         key={index}
                         className={cn("flex items-start gap-3", {
-                          "justify-end": item.speaker === "Candidate",
+                          "justify-end": item.speaker === "Interviewee",
                         })}
                       >
                         {item.speaker === "AI Interviewer" && (
@@ -127,7 +127,7 @@ export default function InterviewPage() {
                         <div
                           className={cn("max-w-xs md:max-w-md rounded-lg p-3", {
                             "bg-primary/10": item.speaker === "AI Interviewer",
-                            "bg-accent/20": item.speaker === "Candidate",
+                            "bg-accent/20": item.speaker === "Interviewee",
                           })}
                         >
                           <p className="font-bold text-sm mb-1">
@@ -135,7 +135,7 @@ export default function InterviewPage() {
                           </p>
                           <p className="text-sm">{item.text}</p>
                         </div>
-                        {item.speaker === "Candidate" && (
+                        {item.speaker === "Interviewee" && (
                           <span className="flex-shrink-0 flex items-center justify-center h-8 w-8 rounded-full bg-accent text-accent-foreground">
                             <User size={18} />
                           </span>

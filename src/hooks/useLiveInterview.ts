@@ -1,4 +1,3 @@
-
 "use client";
 
 import { useState, useRef, useCallback, useEffect } from "react";
@@ -172,9 +171,9 @@ export const useLiveInterview = () => {
             if (event.results[i].isFinal) {
               const text = event.results[i][0].transcript.trim();
               if (text) {
-                if (lastSpeakerRef.current !== "Candidate") {
-                  addTranscriptItem({ speaker: "Candidate", text: text });
-                  lastSpeakerRef.current = "Candidate";
+                if (lastSpeakerRef.current !== "Interviewee") {
+                  addTranscriptItem({ speaker: "Interviewee", text: text });
+                  lastSpeakerRef.current = "Interviewee";
                 } else {
                   updateLastTranscriptItem(" " + text);
                 }
@@ -454,5 +453,3 @@ CRITICAL RULES:
 
   return { startInterview, endInterview, isMuted, toggleMute, transcriptContainerRef };
 };
-
-    

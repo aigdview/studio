@@ -92,15 +92,12 @@ export function InterviewProvider({ children }: { children: ReactNode }) {
     setTranscript((prev) => {
       if (prev.length === 0) return prev;
       const lastItem = prev[prev.length - 1];
-      if (lastItem.speaker === "AI Interviewer") {
-        const newTranscript = [...prev];
-        newTranscript[newTranscript.length - 1] = {
-          ...lastItem,
-          text: lastItem.text + text,
-        };
-        return newTranscript;
-      }
-      return prev;
+      const newTranscript = [...prev];
+      newTranscript[newTranscript.length - 1] = {
+        ...lastItem,
+        text: lastItem.text + text,
+      };
+      return newTranscript;
     });
   };
   
