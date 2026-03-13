@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect } from "react";
+import { useEffect, useRef } from "react";
 import { useRouter } from "next/navigation";
 import { useInterview } from "@/hooks/useInterview";
 import { useLiveInterview } from "@/hooks/useLiveInterview";
@@ -13,6 +13,7 @@ import { cn } from "@/lib/utils";
 
 export default function InterviewPage() {
   const router = useRouter();
+  const transcriptContainerRef = useRef<HTMLDivElement>(null);
   const {
     jobDescription,
     resume,
@@ -21,7 +22,7 @@ export default function InterviewPage() {
     interviewStatus,
   } = useInterview();
 
-  const { startInterview, endInterview, isMuted, toggleMute, transcriptContainerRef } =
+  const { startInterview, endInterview, isMuted, toggleMute } =
     useLiveInterview();
 
 
@@ -54,7 +55,7 @@ export default function InterviewPage() {
     }, 100);
 
     return () => clearTimeout(timeoutId);
-  }, [transcript, transcriptContainerRef]);
+  }, [transcript]);
 
 
   const StatusIndicator = () => {

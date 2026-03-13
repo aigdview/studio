@@ -65,7 +65,6 @@ export const useLiveInterview = () => {
   // Transcript & Auto-Scroll Tracking
   const lastSpeakerRef = useRef<string | null>(null);
   const isThinkingRef = useRef(false); 
-  const transcriptContainerRef = useRef<HTMLDivElement>(null);
 
   const isMutedRef = useRef(isMuted);
   useEffect(() => {
@@ -471,5 +470,5 @@ ${resume}`,
     };
   }, [stopCurrentAudio]);
 
-  return { startInterview, endInterview, isMuted, toggleMute, transcriptContainerRef };
+  return { startInterview, endInterview, isMuted, toggleMute };
 };
