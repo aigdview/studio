@@ -14,6 +14,8 @@ import {
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { Bot } from "lucide-react";
+import { useEffect, useState } from "react";
+import { Skeleton } from "@/components/ui/skeleton";
 
 export default function SetupPage() {
   const router = useRouter();
@@ -24,6 +26,13 @@ export default function SetupPage() {
     setResume,
     setInterviewStatus,
   } = useInterview();
+  
+  const [isMounted, setIsMounted] = useState(false);
+
+  useEffect(() => {
+    setIsMounted(true);
+  }, []);
+
 
   const handleStart = () => {
     if (jobDescription.trim() && resume.trim()) {
@@ -45,32 +54,47 @@ export default function SetupPage() {
           </CardDescription>
         </CardHeader>
         <CardContent className="space-y-6">
-          <div className="space-y-2">
-            <Label htmlFor="job-description" className="text-base">
-              Job Description
-            </Label>
-            <Textarea
-              id="job-description"
-              placeholder="Paste the job description here..."
-              value={jobDescription}
-              onChange={(e) => setJobDescription(e.target.value)}
-              className="min-h-[150px] text-sm"
-              aria-label="Job Description"
-            />
-          </div>
-          <div className="space-y-2">
-            <Label htmlFor="resume" className="text-base">
-              Your Resume
-            </Label>
-            <Textarea
-              id="resume"
-              placeholder="Paste your resume here..."
-              value={resume}
-              onChange={(e) => setResume(e.target.value)}
-              className="min-h-[200px] text-sm"
-              aria-label="Your Resume"
-            />
-          </div>
+          {isMounted ? (
+            <>
+              <div className="space-y-2">
+                <Label htmlFor="job-description" className="text-base">
+                  Job Description
+                </Label>
+                <Textarea
+                  id="job-description"
+                  placeholder="Paste the job description here..."
+                  value={jobDescription}
+                  onChange={(e) => setJobDescription(e.target.value)}
+                  className="min-h-[150px] text-sm"
+                  aria-label="Job Description"
+                />
+              </div>
+              <div className="space-y-2">
+                <Label htmlFor="resume" className="text-base">
+                  Your Resume
+                </Label>
+                <Textarea
+                  id="resume"
+                  placeholder="Paste your resume here..."
+                  value={resume}
+                  onChange={(e) => setResume(e.target.value)}
+                  className="min-h-[200px] text-sm"
+                  aria-label="Your Resume"
+                />
+              </div>
+            </>
+          ) : (
+            <div className="space-y-6">
+                <div className="space-y-2">
+                    <Skeleton className="h-6 w-40" />
+                    <Skeleton className="h-[150px] w-full" />
+                </div>
+                <div className="space-y-2">
+                    <Skeleton className="h-6 w-32" />
+                    <Skeleton className="h-[200px] w-full" />
+                </div>
+            </div>
+          )}
         </CardContent>
         <CardFooter>
           <Button
