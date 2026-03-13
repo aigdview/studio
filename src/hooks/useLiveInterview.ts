@@ -63,7 +63,6 @@ export const useLiveInterview = () => {
   const isTurnInterruptedRef = useRef(false);
   
   const lastSpeakerRef = useRef<string | null>(null);
-  const isThinkingRef = useRef(false); 
 
   const isMutedRef = useRef(isMuted);
   useEffect(() => {
@@ -136,7 +135,7 @@ export const useLiveInterview = () => {
       console.error("Error scheduling audio chunk:", error);
       toast({
           title: "Audio Playback Error",
-          description: error.message || "An issue occurred while trying to play audio.",
+          description: `[${error.name}] ${error.message}`,
           variant: "destructive"
       });
     }
@@ -150,9 +149,7 @@ export const useLiveInterview = () => {
     setAiStatus("thinking");
     isSetupCompleteRef.current = false;
     isTurnInterruptedRef.current = false;
-    
     lastSpeakerRef.current = null;
-    isThinkingRef.current = false;
     
     let workletUrl = "";
     
@@ -172,28 +169,31 @@ export const useLiveInterview = () => {
       if (SpeechRecognition) {
         const recognition = new SpeechRecognition();
         recognition.continuous = true;
-        recognition.interimResults = false;
+        recognition.interimResults = true; // Use interim for faster feedback
         recognition.lang = 'en-US';
 
         recognition.onresult = (event: any) => {
-          for (let i = event.resultIndex; i < event.results.length; ++i) {
-            if (event.results[i].isFinal) {
-              const text = event.results[i][0].transcript.trim();
-              if (text) {
-                if (lastSpeakerRef.current !== "Interviewee") {
-                  addTranscriptItem({ speaker: "Interviewee", text: text });
-                  lastSpeakerRef.current = "Interviewee";
-                } else {
-                  updateLastTranscriptItem(" " + text);
+           let interimTranscript = '';
+           for (let i = event.resultIndex; i < event.results.length; ++i) {
+             const transcriptChunk = event.results[i][0].transcript;
+             if (event.results[i].isFinal) {
+                if (transcriptChunk.trim()) {
+                    if (lastSpeakerRef.current !== "Interviewee") {
+                      addTranscriptItem({ speaker: "Interviewee", text: transcriptChunk.trim() });
+                      lastSpeakerRef.current = "Interviewee";
+                    } else {
+                      updateLastTranscriptItem(transcriptChunk.trim());
+                    }
                 }
-              }
-            }
-          }
+             }
+           }
         };
 
         recognition.onend = () => {
-          if (isSetupCompleteRef.current && wsRef.current?.readyState === WebSocket.OPEN) {
-            try { recognition.start(); } catch (e) {}
+          if (interviewStatusRef.current === 'in-progress') {
+            try { recognition.start(); } catch (e) {
+                console.error("Speech recognition restart failed", e);
+            }
           }
         };
 
@@ -219,31 +219,10 @@ export const useLiveInterview = () => {
       wsRef.current = ws;
 
       ws.onopen = () => {
+        // Step 1: Send a minimal setup message.
         const setupMessage = {
           setup: {
             model: "models/gemini-2.5-flash-native-audio-latest",
-            context: {
-                turns: [
-                  {
-                    role: "user",
-                    parts: [
-                      {
-                        text: `You are an expert technical interviewer named Echo. Your task is to conduct a professional mock interview based on the provided job description and candidate resume.
-- Start by briefly introducing yourself as an AI interviewer from EchoHire.
-- Ask your first interview question immediately. Do not wait for the user to speak first.
-- Keep your responses concise and professional.
-- Do not use markdown or any special formatting in your responses.
-
-Here is the job description:
-${jobDescription}
-
-Here is the candidate's resume:
-${resume}`,
-                      },
-                    ],
-                  },
-                ],
-              },
             generationConfig: {
               responseModalities: ["AUDIO", "TEXT"],
             },
@@ -282,7 +261,7 @@ ${resume}`,
             ],
           },
         };
-        wsRef.current.send(JSON.stringify(clientContentMessage));
+        ws.current.send(JSON.stringify(clientContentMessage));
       };
 
       ws.onmessage = async (event) => {
@@ -305,8 +284,31 @@ ${resume}`,
           }
           
           if (response.setupComplete) {
+            // Step 2: Server is configured. Now send the initial prompt.
             isSetupCompleteRef.current = true;
             setAiStatus("thinking");
+
+            const initialTurn = {
+                clientContent: {
+                    turn: {
+                        role: "user",
+                        parts: [{
+                            text: `You are an expert technical interviewer named Echo. Your task is to conduct a professional mock interview based on the provided job description and candidate resume.
+- Start by briefly introducing yourself as an AI interviewer from EchoHire.
+- Ask your first interview question immediately. Do not wait for the user to speak first.
+- Keep your responses concise and professional.
+- Do not use markdown or any special formatting in your responses.
+
+Here is the job description:
+${jobDescription}
+
+Here is the candidate's resume:
+${resume}`
+                        }]
+                    }
+                }
+            };
+            ws.send(JSON.stringify(initialTurn));
             return;
           }
 
@@ -320,7 +322,8 @@ ${resume}`,
 
           if (response.serverContent?.turnComplete) {
             isTurnInterruptedRef.current = false;
-            lastSpeakerRef.current = null; 
+            lastSpeakerRef.current = null;
+            setAiStatus('listening');
           }
 
           const parts = response.serverContent?.modelTurn?.parts;
@@ -329,33 +332,7 @@ ${resume}`,
 
               for (const part of parts) {
                   if (part.text) {
-                      let textChunk = part.text;
-
-                      if (isThinkingRef.current) {
-                        const closeIndex = textChunk.indexOf("</think>");
-                        if (closeIndex !== -1) {
-                          isThinkingRef.current = false;
-                          textChunk = textChunk.substring(closeIndex + 8);
-                        } else {
-                          textChunk = "";
-                        }
-                      }
-
-                      while (textChunk.includes("<think>")) {
-                        const openIndex = textChunk.indexOf("<think>");
-                        const closeIndex = textChunk.indexOf("</think>", openIndex);
-
-                        if (closeIndex !== -1) {
-                          textChunk = textChunk.substring(0, openIndex) + textChunk.substring(closeIndex + 8);
-                        } else {
-                          isThinkingRef.current = true;
-                          textChunk = textChunk.substring(0, openIndex);
-                          break;
-                        }
-                      }
-
-                      textChunk = textChunk.replace(/[.*?]|\*.*?\*/g, "");
-
+                      let textChunk = part.text.replace(/[.*?]|\*.*?\*/g, "");
                       if (textChunk) {
                           if (lastSpeakerRef.current !== "AI Interviewer") {
                               if (textChunk.trim().length > 0) {
@@ -379,7 +356,7 @@ ${resume}`,
           console.error("Error parsing WebSocket message:", e);
           toast({
               title: "Error Processing AI Response",
-              description: e.message || "An issue occurred while processing the AI's response.",
+              description: `[${e.name}] ${e.message}`,
               variant: "destructive"
           })
         }
@@ -402,26 +379,27 @@ ${resume}`,
                 duration: 9000,
              });
              setAiStatus("idle");
-             setInterviewStatus("finished");
+             // Don't auto-finish, let the user decide.
         }
       };
     } catch (error: any) {
       isConnectingRef.current = false;
       console.error("Error starting interview:", error);
-      toast({ title: "Startup Error", description: error.message || "Could not start the interview. Please check permissions and console.", variant: "destructive" });
+      toast({ title: "Startup Error", description: `[${error.name}] ${error.message}`, variant: "destructive" });
       setAiStatus("idle");
       setInterviewStatus("idle");
     }
   }, [setInterviewStatus, setAiStatus, toast, jobDescription, resume, addTranscriptItem, updateLastTranscriptItem, scheduleAudioChunk, stopCurrentAudio, setFeedback]);
 
   const endInterview = useCallback(async () => {
-    setAiStatus("thinking");
     setInterviewStatus("finished");
+    setAiStatus("thinking");
     
     stopCurrentAudio();
 
     if (wsRef.current) {
       wsRef.current.onmessage = null;
+      wsRef.current.onclose = null; // Prevent onclose toast from firing on manual end
       wsRef.current.close();
       wsRef.current = null;
     }
@@ -448,7 +426,7 @@ ${resume}`,
       setFeedback(feedbackResult);
     } catch (error: any) {
       console.error("Error generating feedback:", error);
-      toast({ title: "Feedback Error", description: error.message || "Could not generate feedback report.", variant: "destructive" });
+      toast({ title: "Feedback Error", description: `[${error.name}] ${error.message}`, variant: "destructive" });
     }
   }, [jobDescription, resume, transcript, setAiStatus, setInterviewStatus, setFeedback, toast, stopCurrentAudio]);
 
@@ -458,16 +436,22 @@ ${resume}`,
 
   useEffect(() => {
     return () => {
-      stopCurrentAudio();
-      if (wsRef.current) wsRef.current.close();
-      if (audioContextRef.current?.state !== 'closed') audioContextRef.current?.close();
-      if (mediaStreamRef.current) mediaStreamRef.current.getTracks().forEach(t => t.stop());
+      // Cleanup on unmount
+      if (wsRef.current) {
+        wsRef.current.close();
+      }
+       if (audioContextRef.current?.state !== 'closed') {
+         audioContextRef.current?.close();
+       }
+       if (mediaStreamRef.current) {
+         mediaStreamRef.current.getTracks().forEach(t => t.stop());
+       }
       if (recognitionRef.current) {
         recognitionRef.current.onend = null;
         try { recognitionRef.current.stop(); } catch(e) {}
       }
     };
-  }, [stopCurrentAudio]);
+  }, []);
 
   return { startInterview, endInterview, isMuted, toggleMute };
 };
