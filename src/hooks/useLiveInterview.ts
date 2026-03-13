@@ -5,8 +5,8 @@ import { useInterview } from "./useInterview";
 import { useToast } from "./use-toast";
 import { generateInterviewFeedback } from "@/ai/flows/generate-interview-feedback";
 
-const WEBSOCKET_URL = `wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent?key=AIzaSyBl-LHuzOv31rw_6DdFJYw0RJevZO_nONE`;
-const AUDIO_SAMPLE_RATE = 24000; // Gemini's native audio rate
+const WEBSOCKET_URL = `wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent?key=${process.env.NEXT_PUBLIC_GEMINI_API_KEY}`;
+const AUDIO_SAMPLE_RATE = 24000;
 
 const workletCode = `
   class AudioProcessor extends AudioWorkletProcessor {
@@ -228,7 +228,7 @@ ${resume}`,
               ],
             },
             generationConfig: {
-              responseModalities: ["AUDIO", "TEXT"], // CRITICAL FIX
+              responseModalities: ["AUDIO", "TEXT"],
               speechConfig: {
                 voiceConfig: { prebuiltVoiceConfig: { voiceName: "Aoede" } },
               },
