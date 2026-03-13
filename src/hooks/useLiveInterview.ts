@@ -42,7 +42,6 @@ export const useLiveInterview = () => {
     transcript,
     addTranscriptItem,
     updateLastTranscriptItem,
-    aiStatus,
     setAiStatus,
     interviewStatus,
     setInterviewStatus,
@@ -226,6 +225,11 @@ export const useLiveInterview = () => {
             generationConfig: {
               responseModalities: ["AUDIO", "TEXT"],
             },
+            systemInstruction: {
+              parts: [{
+                text: `You are an expert technical interviewer. The user has provided a job description and a resume. Your task is to conduct a professional mock interview. Start by briefly introducing yourself as an AI interviewer from EchoHire. Then, ask your first question. Do not wait for the user to speak first. Keep your responses concise and professional. Do not use markdown or special formatting.`
+              }]
+            }
           },
         };
         ws.send(JSON.stringify(setupMessage));
@@ -280,7 +284,7 @@ export const useLiveInterview = () => {
                 turns: [
                   {
                     role: "user",
-                    parts: [{ text: `You are an expert interviewer based on the following job description and resume. Start the interview now by introducing yourself briefly and then asking your first question. Do not wait for me to respond. \n\nJob Description:\n${jobDescription}\n\nResume:\n${resume}` }]
+                    parts: [{ text: `Job Description:\n${jobDescription}\n\nResume:\n${resume}` }]
                   }
                 ],
                 turnComplete: true
