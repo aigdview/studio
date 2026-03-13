@@ -1,12 +1,13 @@
 "use client";
 
-import { useEffect } from "react";
+import { useEffect, useRef } from "react";
 import { useRouter } from "next/navigation";
 import { useInterview } from "@/hooks/useInterview";
 import { useLiveInterview } from "@/hooks/useLiveInterview";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
-import { Mic, MicOff, PhoneOff, Bot } from "lucide-react";
+import { ScrollArea } from "@/components/ui/scroll-area";
+import { Mic, MicOff, PhoneOff, Bot, User } from "lucide-react";
 import { ThinkingIcon, SpeakingIcon, ListeningIcon } from "@/components/icons";
 import { cn } from "@/lib/utils";
 
@@ -17,10 +18,19 @@ export default function InterviewPage() {
     resume,
     aiStatus,
     interviewStatus,
+    transcript,
   } = useInterview();
 
   const { startInterview, endInterview, isMuted, toggleMute } =
     useLiveInterview();
+  
+  const transcriptContainerRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (transcriptContainerRef.current) {
+      transcriptContainerRef.current.scrollTop = transcriptContainerRef.current.scrollHeight;
+    }
+  }, [transcript]);
 
 
   useEffect(() => {
@@ -80,7 +90,44 @@ export default function InterviewPage() {
     <div className="flex h-screen w-full flex-col items-center justify-center p-4 md:p-8">
       <Card className="w-full max-w-4xl h-full flex flex-col shadow-2xl">
         <CardContent className="flex-1 flex flex-col p-4 md:p-6 overflow-hidden">
-          <div className="flex-1 grid md:grid-cols-1 gap-6 overflow-hidden">
+          <div className="flex-1 grid md:grid-cols-2 gap-6 overflow-hidden">
+             <div className="flex flex-col">
+              <h2 className="text-xl font-headline mb-4">Live Transcript</h2>
+              <ScrollArea className="flex-1 pr-4" ref={transcriptContainerRef}>
+                 <div className="space-y-6">
+                  {transcript.map((item, index) => (
+                    <div
+                      key={index}
+                      className={cn(
+                        "flex items-start gap-4",
+                        item.speaker === "Interviewee" && "justify-end"
+                      )}
+                    >
+                      {item.speaker === "AI Interviewer" && (
+                        <div className="flex-shrink-0 w-10 h-10 rounded-full bg-primary flex items-center justify-center">
+                          <Bot className="w-6 h-6 text-primary-foreground" />
+                        </div>
+                      )}
+                      <div
+                        className={cn(
+                          "max-w-md rounded-lg p-3 text-sm",
+                          item.speaker === "AI Interviewer"
+                            ? "bg-muted"
+                            : "bg-primary text-primary-foreground"
+                        )}
+                      >
+                        <p>{item.text}</p>
+                      </div>
+                       {item.speaker === "Interviewee" && (
+                        <div className="flex-shrink-0 w-10 h-10 rounded-full bg-secondary flex items-center justify-center">
+                          <User className="w-6 h-6 text-secondary-foreground" />
+                        </div>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              </ScrollArea>
+            </div>
             <div className="flex flex-col items-center justify-center h-full p-6 bg-muted/50 rounded-lg">
               <StatusIndicator />
             </div>
