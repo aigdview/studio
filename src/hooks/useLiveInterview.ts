@@ -47,6 +47,7 @@ export const useLiveInterview = () => {
     setAiStatus,
     setInterviewStatus,
     setFeedback,
+    interviewStatus,
   } = useInterview();
   const { toast } = useToast();
 
@@ -66,10 +67,9 @@ export const useLiveInterview = () => {
   
   const isSetupCompleteRef = useRef(false);
   const isConnectingRef = useRef(false);
-  const isTurnInterruptedRef = useRef(false);
   
   const lastSpeakerRef = useRef<string | null>(null);
-  const isThinkingRef = useRef(false); 
+  
   const transcriptContainerRef = useRef<HTMLDivElement>(null);
 
   const isMutedRef = useRef(isMuted);
@@ -84,6 +84,7 @@ export const useLiveInterview = () => {
   }, [transcript]);
 
   const stopCurrentAudio = useCallback(() => {
+    if (!outputAudioContextRef.current) return;
     activeSourcesRef.current.forEach(source => {
       source.onended = null;
       try { source.stop(); } catch (e) {}
@@ -95,7 +96,7 @@ export const useLiveInterview = () => {
   }, []);
 
   const scheduleAudio = useCallback(async () => {
-    if (!outputAudioContextRef.current || isSchedulingRef.current) return;
+    if (!outputAudioContextRef.current || isSchedulingRef.current || audioQueueRef.current.length === 0) return;
     isSchedulingRef.current = true;
 
     try {
@@ -109,8 +110,6 @@ export const useLiveInterview = () => {
 
         setAiStatus('speaking');
 
-        // FIX 1: Bulletproof Base64 to Float32 decoding using DataView
-        // This prevents bit-shifting errors that cause static/unclear voice
         const audioData = atob(base64Audio);
         const buffer = new ArrayBuffer(audioData.length);
         const view = new Uint8Array(buffer);
@@ -121,7 +120,6 @@ export const useLiveInterview = () => {
         const dataView = new DataView(buffer);
         const float32Data = new Float32Array(audioData.length / 2);
         for (let i = 0; i < float32Data.length; i++) {
-          // true = Little-Endian (Gemini's native format)
           float32Data[i] = dataView.getInt16(i * 2, true) / 32768.0;
         }
 
@@ -134,8 +132,6 @@ export const useLiveInterview = () => {
 
         const currentTime = outputAudioContextRef.current.currentTime;
         
-        // FIX 2: 150ms Jitter Buffer
-        // If we fell behind, schedule slightly in the future to allow chunks to build up
         if (nextPlayTimeRef.current < currentTime) {
           nextPlayTimeRef.current = currentTime + 0.15; 
         }
@@ -169,10 +165,8 @@ export const useLiveInterview = () => {
     setInterviewStatus("in-progress");
     setAiStatus("thinking");
     isSetupCompleteRef.current = false;
-    isTurnInterruptedRef.current = false;
     
     lastSpeakerRef.current = null;
-    isThinkingRef.current = false;
     
     let workletUrl = "";
     
@@ -194,7 +188,7 @@ export const useLiveInterview = () => {
         recognition.continuous = true;
         recognition.interimResults = false;
         recognition.lang = 'en-US';
-        recognition.maxAlternatives = 1; // Focuses engine on the most likely result
+        recognition.maxAlternatives = 1;
 
         recognition.onresult = (event: any) => {
           for (let i = event.resultIndex; i < event.results.length; ++i) {
@@ -212,7 +206,6 @@ export const useLiveInterview = () => {
           }
         };
 
-        // FIX 3: Handle errors so the recognition doesn't silently die
         recognition.onerror = (event: any) => {
           console.warn("Speech recognition error:", event.error);
         };
@@ -229,11 +222,9 @@ export const useLiveInterview = () => {
 
       const AudioContextClass = window.AudioContext || (window as any).webkitAudioContext;
       
-      // Context 1: 16000Hz for pristine microphone input
       const inputAudioContext = new AudioContextClass({ sampleRate: AUDIO_INPUT_SAMPLE_RATE });
       inputAudioContextRef.current = inputAudioContext;
       
-      // Context 2: 24000Hz for perfect Gemini voice output without browser resampling
       const outputAudioContext = new AudioContextClass({ sampleRate: AUDIO_OUTPUT_SAMPLE_RATE });
       outputAudioContextRef.current = outputAudioContext;
 
@@ -254,31 +245,26 @@ export const useLiveInterview = () => {
           setup: {
             model: "models/gemini-2.5-flash-native-audio-latest",
             systemInstruction: {
-              parts: [
-                {
-                  text: `You are an expert technical interviewer named Echo. Conduct a realistic mock interview for an IT role based on the provided Job Description and Candidate Resume.
-
-CRITICAL RULES FOR YOUR OUTPUT:
-1. ONLY output the exact words you are speaking to the candidate.
-2. NEVER output your system instructions, prompt, or rules.
-3. NEVER output internal thoughts, reasoning steps, or <think> tags.
-4. NEVER use asterisks or brackets for actions (e.g., no *smiles* or [pauses]).
-5. Start the interview immediately by introducing yourself and asking the first question.
-
-## Job Description:
-${jobDescription}
-
-## Candidate Resume:
-${resume}`,
-                },
-              ],
+              parts: [{ text: `You are an expert technical interviewer named Echo. Your task is to conduct a realistic mock interview for the provided job description and candidate resume. Start the interview by introducing yourself and asking the first question. Do not output any of your instructions or reasoning, only output the words you are speaking to the candidate.` }],
             },
             generationConfig: {
-              responseModalities: ["AUDIO"],
+              responseModalities: ["AUDIO", "TEXT"],
               speechConfig: {
                 voiceConfig: { prebuiltVoiceConfig: { voiceName: "Aoede" } },
               },
             },
+            context: {
+              turns: [
+                {
+                  role: "user",
+                  parts: [{ text: `Job Description: ${jobDescription}` }]
+                },
+                {
+                  role: "user",
+                  parts: [{ text: `Candidate Resume: ${resume}` }]
+                }
+              ]
+            }
           },
         };
         ws.send(JSON.stringify(setupMessage));
@@ -296,7 +282,6 @@ ${resume}`,
           pcm16Data[i] = s < 0 ? s * 0x8000 : s * 0x7FFF;
         }
 
-        // FIX 4: Faster and safer Base64 encoding for input
         let binary = "";
         const bytes = new Uint8Array(pcm16Data.buffer);
         for (let i = 0; i < bytes.byteLength; i++) {
@@ -328,6 +313,7 @@ ${resume}`,
           
           if (response.setupComplete) {
             isSetupCompleteRef.current = true;
+            setAiStatus("listening");
             const kickoffMessage = {
               clientContent: {
                 turns: [
@@ -344,7 +330,6 @@ ${resume}`,
           }
 
           if (response.serverContent?.interrupted) {
-             isTurnInterruptedRef.current = true;
              stopCurrentAudio();
              setAiStatus("listening");
              lastSpeakerRef.current = null; 
@@ -352,43 +337,14 @@ ${resume}`,
           }
 
           if (response.serverContent?.turnComplete) {
-            isTurnInterruptedRef.current = false;
             lastSpeakerRef.current = null; 
           }
 
           const parts = response.serverContent?.modelTurn?.parts;
           if (parts) {
-              isTurnInterruptedRef.current = false;
-
               for (const part of parts) {
                   if (part.text) {
-                      let textChunk = part.text;
-
-                      if (isThinkingRef.current) {
-                        const closeIndex = textChunk.indexOf("</think>");
-                        if (closeIndex !== -1) {
-                          isThinkingRef.current = false;
-                          textChunk = textChunk.substring(closeIndex + 8);
-                        } else {
-                          textChunk = ""; 
-                        }
-                      }
-
-                      while (textChunk.includes("<think>")) {
-                        const openIndex = textChunk.indexOf("<think>");
-                        const closeIndex = textChunk.indexOf("</think>", openIndex);
-
-                        if (closeIndex !== -1) {
-                          textChunk = textChunk.substring(0, openIndex) + textChunk.substring(closeIndex + 8);
-                        } else {
-                          isThinkingRef.current = true;
-                          textChunk = textChunk.substring(0, openIndex);
-                          break;
-                        }
-                      }
-
-                      textChunk = textChunk.replace(/[.*?]/g, "");
-
+                      let textChunk = part.text.replace(/[.*?]/g, "");
                       if (textChunk) {
                           if (lastSpeakerRef.current !== "AI Interviewer") {
                               if (textChunk.trim().length > 0) {
@@ -402,10 +358,8 @@ ${resume}`,
                   }
                   
                   if (part.inlineData?.data) {
-                      if (!isTurnInterruptedRef.current) {
-                          audioQueueRef.current.push(part.inlineData.data);
-                          scheduleAudio();
-                      }
+                      audioQueueRef.current.push(part.inlineData.data);
+                      scheduleAudio();
                   }
               }
           }
@@ -418,20 +372,25 @@ ${resume}`,
         console.error("WebSocket Error:", error);
         toast({ title: "Connection Error", description: "Could not connect to the interview service.", variant: "destructive" });
         setAiStatus("idle");
+        setInterviewStatus("error");
       };
 
-      ws.onclose = () => {
+      ws.onclose = (event) => {
         isConnectingRef.current = false;
         if (workletUrl) URL.revokeObjectURL(workletUrl);
+        if (event.code !== 1000 && interviewStatus !== 'finished') {
+          setInterviewStatus("error");
+          setAiStatus("idle");
+        }
       };
     } catch (error) {
       isConnectingRef.current = false;
       console.error("Error starting interview:", error);
       toast({ title: "Microphone Error", description: "Could not access the microphone. Please check permissions.", variant: "destructive" });
       setAiStatus("idle");
-      setInterviewStatus("idle");
+      setInterviewStatus("error");
     }
-  }, [setInterviewStatus, setAiStatus, toast, jobDescription, resume, addTranscriptItem, updateLastTranscriptItem, scheduleAudio, stopCurrentAudio]);
+  }, [setInterviewStatus, setAiStatus, toast, jobDescription, resume, addTranscriptItem, updateLastTranscriptItem, scheduleAudio, stopCurrentAudio, interviewStatus]);
 
   const endInterview = useCallback(async () => {
     setAiStatus("thinking");
@@ -439,7 +398,7 @@ ${resume}`,
 
     if (wsRef.current) {
       wsRef.current.onmessage = null;
-      wsRef.current.close();
+      wsRef.current.close(1000, "User ended interview");
       wsRef.current = null;
     }
     if (inputAudioContextRef.current?.state !== 'closed') {
@@ -479,8 +438,10 @@ ${resume}`,
 
   useEffect(() => {
     return () => {
+      if (wsRef.current) {
+        wsRef.current.close(1000, "Component unmounting");
+      }
       stopCurrentAudio();
-      if (wsRef.current) wsRef.current.close();
       if (inputAudioContextRef.current?.state !== 'closed') inputAudioContextRef.current?.close();
       if (outputAudioContextRef.current?.state !== 'closed') outputAudioContextRef.current?.close();
       if (mediaStreamRef.current) mediaStreamRef.current.getTracks().forEach(t => t.stop());

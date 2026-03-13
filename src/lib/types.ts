@@ -4,5 +4,5 @@ export type TranscriptItem = {
   isFinal?: boolean;
 };
 
-export type InterviewStatus = "idle" | "in-progress" | "finished";
+export type InterviewStatus = "idle" | "in-progress" | "finished" | "error";
 export type AiStatus = "idle" | "listening" | "speaking" | "thinking";
