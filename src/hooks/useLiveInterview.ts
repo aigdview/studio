@@ -5,9 +5,8 @@ import { useInterview } from "./useInterview";
 import { useToast } from "./use-toast";
 import { generateInterviewFeedback } from "@/ai/flows/generate-interview-feedback";
 
-const WEBSOCKET_URL = `wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent?key=${process.env.NEXT_PUBLIC_GEMINI_API_KEY}`;
-// Changed to 24000 to match Gemini's native audio output rate
-const AUDIO_SAMPLE_RATE = 24000;
+const WEBSOCKET_URL = `wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent?key=AIzaSyBl-LHuzOv31rw_6DdFJYw0RJevZO_nONE`;
+const AUDIO_SAMPLE_RATE = 24000; // Gemini's native audio rate
 
 const workletCode = `
   class AudioProcessor extends AudioWorkletProcessor {
@@ -41,7 +40,6 @@ export const useLiveInterview = () => {
     transcript,
     addTranscriptItem,
     updateLastTranscriptItem,
-    aiStatus,
     setAiStatus,
     setInterviewStatus,
     setFeedback,
@@ -53,8 +51,7 @@ export const useLiveInterview = () => {
   const audioContextRef = useRef<AudioContext | null>(null);
   const mediaStreamRef = useRef<MediaStream | null>(null);
   const recognitionRef = useRef<any>(null);
-  
-  // High-performance audio scheduling refs
+
   const activeAudioSourcesRef = useRef<AudioBufferSourceNode[]>([]);
   const nextPlayTimeRef = useRef<number>(0);
   
@@ -62,22 +59,13 @@ export const useLiveInterview = () => {
   const isConnectingRef = useRef(false);
   const isTurnInterruptedRef = useRef(false);
   
-  // Transcript & Auto-Scroll Tracking
   const lastSpeakerRef = useRef<string | null>(null);
-  const isThinkingRef = useRef(false); 
   const transcriptContainerRef = useRef<HTMLDivElement>(null);
 
   const isMutedRef = useRef(isMuted);
   useEffect(() => {
     isMutedRef.current = isMuted;
   }, [isMuted]);
-
-  // --- Auto-Scroll Effect ---
-  useEffect(() => {
-    if (transcriptContainerRef.current) {
-      transcriptContainerRef.current.scrollTop = transcriptContainerRef.current.scrollHeight;
-    }
-  }, [transcript]);
 
   const stopCurrentAudio = useCallback(() => {
     activeAudioSourcesRef.current.forEach(source => {
@@ -91,7 +79,6 @@ export const useLiveInterview = () => {
     nextPlayTimeRef.current = 0;
   }, []);
 
-  // --- Gapless Audio Scheduler ---
   const scheduleAudioChunk = useCallback((base64Audio: string) => {
     if (!audioContextRef.current || audioContextRef.current.state === 'closed') return;
     
@@ -101,13 +88,11 @@ export const useLiveInterview = () => {
         ctx.resume();
       }
 
-      // Fast Base64 to PCM16 decoding using typed arrays
       const binaryString = atob(base64Audio);
       const bytes = new Uint8Array(binaryString.length);
       for (let i = 0; i < binaryString.length; i++) {
         bytes[i] = binaryString.charCodeAt(i);
       }
-      // Gemini returns little-endian PCM16, which matches standard browser architecture
       const pcm16Data = new Int16Array(bytes.buffer);
 
       const float32Data = new Float32Array(pcm16Data.length);
@@ -115,7 +100,6 @@ export const useLiveInterview = () => {
         float32Data[i] = pcm16Data[i] / 32767.0;
       }
 
-      // Use the constant here to ensure consistency
       const audioBuffer = ctx.createBuffer(1, float32Data.length, AUDIO_SAMPLE_RATE);
       audioBuffer.getChannelData(0).set(float32Data);
 
@@ -123,10 +107,8 @@ export const useLiveInterview = () => {
       source.buffer = audioBuffer;
       source.connect(ctx.destination);
 
-      // Calculate precise start time for gapless playback
       const currentTime = ctx.currentTime;
       if (nextPlayTimeRef.current < currentTime) {
-        // If we fell behind or this is the first chunk, add a tiny 50ms buffer to prevent underrun
         nextPlayTimeRef.current = currentTime + 0.05; 
       }
 
@@ -137,7 +119,6 @@ export const useLiveInterview = () => {
       setAiStatus('speaking');
 
       source.onended = () => {
-        // Cleanup finished sources
         activeAudioSourcesRef.current = activeAudioSourcesRef.current.filter(s => s !== source);
         if (activeAudioSourcesRef.current.length === 0) {
           setAiStatus('listening');
@@ -156,9 +137,7 @@ export const useLiveInterview = () => {
     setAiStatus("thinking");
     isSetupCompleteRef.current = false;
     isTurnInterruptedRef.current = false;
-    
     lastSpeakerRef.current = null;
-    isThinkingRef.current = false;
     
     let workletUrl = "";
     
@@ -249,7 +228,7 @@ ${resume}`,
               ],
             },
             generationConfig: {
-              responseModalities: ["AUDIO", "TEXT"],
+              responseModalities: ["AUDIO", "TEXT"], // CRITICAL FIX
               speechConfig: {
                 voiceConfig: { prebuiltVoiceConfig: { voiceName: "Aoede" } },
               },
@@ -294,12 +273,7 @@ ${resume}`,
 
       ws.onmessage = async (event) => {
         try {
-          let messageData = event.data;
-          if (messageData instanceof Blob) {
-            messageData = await messageData.text();
-          }
-
-          const response = JSON.parse(messageData);
+          const response = JSON.parse(await event.data.text());
           
           if (response.setupComplete) {
             isSetupCompleteRef.current = true;
@@ -328,8 +302,7 @@ ${resume}`,
 
           if (response.serverContent?.turnComplete) {
             isTurnInterruptedRef.current = false;
-            // setAiStatus is handled by the audio source onended callback now for better sync
-            lastSpeakerRef.current = null; 
+            lastSpeakerRef.current = null;
           }
 
           const parts = response.serverContent?.modelTurn?.parts;
@@ -338,46 +311,14 @@ ${resume}`,
 
               for (const part of parts) {
                   if (part.text) {
-                      let textChunk = part.text;
-
-                      // 1. Handle ongoing <think> block from previous chunks
-                      if (isThinkingRef.current) {
-                        const closeIndex = textChunk.indexOf("</think>");
-                        if (closeIndex !== -1) {
-                          isThinkingRef.current = false;
-                          textChunk = textChunk.substring(closeIndex + 8);
-                        } else {
-                          textChunk = ""; // Still thinking, discard entirely
-                        }
-                      }
-
-                      // 2. Handle new <think> blocks in current chunk
-                      while (textChunk.includes("<think>")) {
-                        const openIndex = textChunk.indexOf("<think>");
-                        const closeIndex = textChunk.indexOf("</think>", openIndex);
-
-                        if (closeIndex !== -1) {
-                          // Opens and closes in the same chunk
-                          textChunk = textChunk.substring(0, openIndex) + textChunk.substring(closeIndex + 8);
-                        } else {
-                          // Opens but doesn't close
-                          isThinkingRef.current = true;
-                          textChunk = textChunk.substring(0, openIndex);
-                          break;
-                        }
-                      }
-
-                      // Strip out any bracketed or asterisk actions without removing punctuation
-                      textChunk = textChunk.replace(/[.*?]|\*.*?\*/g, "");
+                      let textChunk = part.text.replace(/<think>[\s\S]*?<\/think>|\[.*?\]|\*.*?\*/gi, "").trim();
 
                       if (textChunk) {
                           if (lastSpeakerRef.current !== "AI Interviewer") {
-                              if (textChunk.trim().length > 0) {
-                                  addTranscriptItem({ speaker: "AI Interviewer", text: textChunk });
-                                  lastSpeakerRef.current = "AI Interviewer";
-                              }
+                              addTranscriptItem({ speaker: "AI Interviewer", text: textChunk });
+                              lastSpeakerRef.current = "AI Interviewer";
                           } else {
-                              updateLastTranscriptItem(textChunk);
+                              updateLastTranscriptItem(" " + textChunk);
                           }
                       }
                   }
