@@ -45,7 +45,7 @@ export default function InterviewPage() {
     }
   }, [jobDescription, resume, router]);
 
-  // Improved auto-scroll: Added a slight delay to ensure the DOM has painted 
+  // Improved auto-scroll: Added a slight delay to ensure the DOM has painted
   // the new transcript bubbles before attempting to scroll.
   useEffect(() => {
     const timeoutId = setTimeout(() => {
