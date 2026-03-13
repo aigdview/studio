@@ -6,3 +6,5 @@ export type TranscriptItem = {
 
 export type InterviewStatus = "idle" | "in-progress" | "finished";
 export type AiStatus = "idle" | "listening" | "speaking" | "thinking";
+
+    
