@@ -9,7 +9,7 @@ import { generateInterviewFeedback } from "@/ai/flows/generate-interview-feedbac
 // IMPORTANT: Please replace this with your actual Google AI API key.
 // You can obtain a key from Google AI Studio: https://aistudio.google.com/app/apikey
 // =================================================================================================
-const API_KEY = "REPLACE_WITH_YOUR_GOOGLE_AI_API_KEY";
+const API_KEY = "AIzaSyBl-LHuzOv31rw_6DdFJYw0RJevZO_nONE";
 // =================================================================================================
 
 const WEBSOCKET_URL = `wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent?key=${API_KEY}`;
