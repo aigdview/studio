@@ -222,14 +222,31 @@ export const useLiveInterview = () => {
         const setupMessage = {
           setup: {
             model: "models/gemini-2.5-flash-native-audio-latest",
+            context: {
+                turns: [
+                  {
+                    role: "user",
+                    parts: [
+                      {
+                        text: `You are an expert technical interviewer named Echo. Your task is to conduct a professional mock interview based on the provided job description and candidate resume.
+- Start by briefly introducing yourself as an AI interviewer from EchoHire.
+- Ask your first interview question immediately. Do not wait for the user to speak first.
+- Keep your responses concise and professional.
+- Do not use markdown or any special formatting in your responses.
+
+Here is the job description:
+${jobDescription}
+
+Here is the candidate's resume:
+${resume}`,
+                      },
+                    ],
+                  },
+                ],
+              },
             generationConfig: {
               responseModalities: ["AUDIO", "TEXT"],
             },
-            systemInstruction: {
-              parts: [{
-                text: `You are an expert technical interviewer. The user has provided a job description and a resume. Your task is to conduct a professional mock interview. Start by briefly introducing yourself as an AI interviewer from EchoHire. Then, ask your first question. Do not wait for the user to speak first. Keep your responses concise and professional. Do not use markdown or special formatting.`
-              }]
-            }
           },
         };
         ws.send(JSON.stringify(setupMessage));
@@ -276,21 +293,20 @@ export const useLiveInterview = () => {
           }
 
           const response = JSON.parse(messageData);
+
+          if (response.error) {
+            toast({
+                title: "AI Error",
+                description: `Code: ${response.error.code}. ${response.error.message}`,
+                variant: "destructive",
+                duration: 9000,
+             });
+             return;
+          }
           
           if (response.setupComplete) {
             isSetupCompleteRef.current = true;
-            const kickoffMessage = {
-              clientContent: {
-                turns: [
-                  {
-                    role: "user",
-                    parts: [{ text: `Job Description:\n${jobDescription}\n\nResume:\n${resume}` }]
-                  }
-                ],
-                turnComplete: true
-              }
-            };
-            ws.send(JSON.stringify(kickoffMessage));
+            setAiStatus("thinking");
             return;
           }
 
