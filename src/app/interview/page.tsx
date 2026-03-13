@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef } from "react";
+import { useEffect } from "react";
 import { useRouter } from "next/navigation";
 import { useInterview } from "@/hooks/useInterview";
 import { useLiveInterview } from "@/hooks/useLiveInterview";
@@ -18,14 +18,12 @@ export default function InterviewPage() {
     resume,
     transcript,
     aiStatus,
-    setInterviewStatus,
     interviewStatus,
   } = useInterview();
 
-  const { startInterview, endInterview, isMuted, toggleMute } =
+  const { startInterview, endInterview, isMuted, toggleMute, transcriptContainerRef } =
     useLiveInterview();
 
-  const transcriptEndRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     if (interviewStatus === "idle") {
@@ -33,6 +31,12 @@ export default function InterviewPage() {
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [interviewStatus]);
+
+  useEffect(() => {
+    if (interviewStatus === 'finished') {
+        router.push("/report");
+    }
+  }, [interviewStatus, router]);
 
   useEffect(() => {
     if (!jobDescription || !resume) {
@@ -44,18 +48,14 @@ export default function InterviewPage() {
   // the new transcript bubbles before attempting to scroll.
   useEffect(() => {
     const timeoutId = setTimeout(() => {
-      if (transcriptEndRef.current) {
-        transcriptEndRef.current.scrollIntoView({ behavior: "smooth", block: "end" });
+      if (transcriptContainerRef.current) {
+        transcriptContainerRef.current.scrollIntoView({ behavior: "smooth", block: "end" });
       }
     }, 100);
 
     return () => clearTimeout(timeoutId);
-  }, [transcript]);
+  }, [transcript, transcriptContainerRef]);
 
-  const handleEndInterview = async () => {
-    await endInterview();
-    router.push("/report");
-  };
 
   const StatusIndicator = () => {
     let icon, text, color;
@@ -78,7 +78,7 @@ export default function InterviewPage() {
         break;
       default:
         icon = <Bot className="h-16 w-16 text-muted-foreground" />;
-        text = "Waiting to start...";
+        text = "Initializing...";
         color = "text-muted-foreground";
     }
 
@@ -142,7 +142,7 @@ export default function InterviewPage() {
                         )}
                       </div>
                     ))}
-                    <div ref={transcriptEndRef} className="h-1" />
+                    <div ref={transcriptContainerRef} className="h-1" />
                   </div>
                 </ScrollArea>
               </div>
@@ -162,7 +162,7 @@ export default function InterviewPage() {
               variant="destructive"
               size="lg"
               className="rounded-full w-16 h-16"
-              onClick={handleEndInterview}
+              onClick={endInterview}
               aria-label="End Interview"
             >
               <PhoneOff size={24} />
@@ -173,3 +173,5 @@ export default function InterviewPage() {
     </div>
   );
 }
+
+    
