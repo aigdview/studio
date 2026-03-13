@@ -5,14 +5,7 @@ import { useInterview } from "./useInterview";
 import { useToast } from "./use-toast";
 import { generateInterviewFeedback } from "@/ai/flows/generate-interview-feedback";
 
-// =================================================================================================
-// This API key is being used for the live interview connection.
-// If you encounter connection errors (like Code: 1007), please ensure this key is valid
-// and has the "Generative Language API" enabled in your Google Cloud project.
-// You can obtain a key from Google AI Studio: https://aistudio.google.com/app/apikey
-// =================================================================================================
 const API_KEY = "AIzaSyBl-LHuzOv31rw_6DdFJYw0RJevZO_nONE";
-// =================================================================================================
 
 const WEBSOCKET_URL = `wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent?key=${API_KEY}`;
 const AUDIO_SAMPLE_RATE = 24000;
@@ -230,18 +223,8 @@ export const useLiveInterview = () => {
         const setupMessage = {
           setup: {
             model: "models/gemini-2.5-flash-native-audio-latest",
-            systemInstruction: {
-              parts: [
-                {
-                  text: "You are an expert interviewer. Start the interview by asking 'What is your greatest strength?'. Do not say anything else.",
-                },
-              ],
-            },
             generationConfig: {
               responseModalities: ["AUDIO", "TEXT"],
-              speechConfig: {
-                voiceConfig: { prebuiltVoiceConfig: { voiceName: "Aoede" } },
-              },
             },
           },
         };
@@ -297,7 +280,7 @@ export const useLiveInterview = () => {
                 turns: [
                   {
                     role: "user",
-                    parts: [{ text: "Hello! I am ready." }]
+                    parts: [{ text: `You are an expert interviewer based on the following job description and resume. Start the interview now by introducing yourself briefly and then asking your first question. Do not wait for me to respond. \n\nJob Description:\n${jobDescription}\n\nResume:\n${resume}` }]
                   }
                 ],
                 turnComplete: true
