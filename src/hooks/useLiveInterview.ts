@@ -56,7 +56,8 @@ export const useLiveInterview = () => {
   const activeAudioSourcesRef = useRef<AudioBufferSourceNode[]>([]);
   const nextPlayTimeRef = useRef<number>(0);
   
-  const isSetupCompleteRef = useRef(false);
+  const isMicStreamingAllowedRef = useRef(false); // Controls when audio is sent to API
+  const isInterviewActiveRef = useRef(false); // Controls the speech recognition loop
   const isConnectingRef = useRef(false);
   const isTurnInterruptedRef = useRef(false);
   
@@ -136,10 +137,11 @@ export const useLiveInterview = () => {
   const startInterview = useCallback(async () => {
     if (isConnectingRef.current || wsRef.current) return;
     isConnectingRef.current = true;
+    isInterviewActiveRef.current = true;
 
     setInterviewStatus("in-progress");
     setAiStatus("thinking");
-    isSetupCompleteRef.current = false;
+    isMicStreamingAllowedRef.current = false;
     isTurnInterruptedRef.current = false;
     
     lastSpeakerRef.current = null;
@@ -183,7 +185,7 @@ export const useLiveInterview = () => {
         };
 
         recognition.onend = () => {
-          if (isSetupCompleteRef.current && wsRef.current?.readyState === WebSocket.OPEN) {
+          if (isInterviewActiveRef.current && wsRef.current?.readyState === WebSocket.OPEN) {
             try { recognition.start(); } catch (e) {}
           }
         };
@@ -233,7 +235,7 @@ CRITICAL RULES:
               ],
             },
             generationConfig: {
-              responseModalities: ["TEXT", "AUDIO"],
+              responseModalities: ["AUDIO", "TEXT"],
               speechConfig: {
                 voiceConfig: { prebuiltVoiceConfig: { voiceName: "Aoede" } },
               },
@@ -244,7 +246,8 @@ CRITICAL RULES:
       };
 
       workletNode.port.onmessage = (event) => {
-        if (!isSetupCompleteRef.current || !wsRef.current || wsRef.current.readyState !== WebSocket.OPEN || isMutedRef.current) {
+        // FIX 1: We block mic audio from sending until the AI has successfully started its first turn
+        if (!isMicStreamingAllowedRef.current || !wsRef.current || wsRef.current.readyState !== WebSocket.OPEN || isMutedRef.current) {
           return;
         }
 
@@ -286,7 +289,7 @@ CRITICAL RULES:
           const response = JSON.parse(messageData);
           
           if (response.setupComplete) {
-            isSetupCompleteRef.current = true;
+            // Send the kickoff message to force the AI to start speaking
             const kickoffMessage = {
               clientContent: {
                 turns: [
@@ -299,7 +302,15 @@ CRITICAL RULES:
               }
             };
             ws.send(JSON.stringify(kickoffMessage));
+            // Notice we DO NOT set isMicStreamingAllowedRef = true here anymore!
             return;
+          }
+
+          // FIX 2: Once the server actually responds to our kickoff, we open the mic channel.
+          // This prevents background noise from instantly interrupting the AI's first sentence.
+          if (response.serverContent && !isMicStreamingAllowedRef.current) {
+            isMicStreamingAllowedRef.current = true;
+            console.log("AI started responding, microphone channel opened.");
           }
 
           if (response.serverContent?.interrupted) {
@@ -350,6 +361,7 @@ CRITICAL RULES:
                           }
                       }
 
+                      // FIX 3: Correctly escaped brackets so periods and question marks are not deleted!
                       if (textChunk) {
                           textChunk = textChunk.replace(/\[.*?\]|\*.*?\*/g, "");
                       }
@@ -398,6 +410,7 @@ CRITICAL RULES:
   }, [setInterviewStatus, setAiStatus, toast, jobDescription, resume, addTranscriptItem, updateLastTranscriptItem, scheduleAudioChunk, stopCurrentAudio]);
 
   const endInterview = useCallback(async () => {
+    isInterviewActiveRef.current = false;
     setAiStatus("thinking");
     stopCurrentAudio();
 
@@ -440,6 +453,7 @@ CRITICAL RULES:
 
   useEffect(() => {
     return () => {
+      isInterviewActiveRef.current = false;
       stopCurrentAudio();
       if (wsRef.current) wsRef.current.close();
       if (audioContextRef.current?.state !== 'closed') audioContextRef.current?.close();
