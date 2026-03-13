@@ -224,7 +224,7 @@ export const useLiveInterview = () => {
       ws.onopen = () => {
         const setupMessage = {
           setup: {
-            model: "gemini-2.5-flash-native-audio-latest",
+            model: "models/gemini-2.5-flash-native-audio-latest",
             systemInstruction: {
               parts: [
                 {
