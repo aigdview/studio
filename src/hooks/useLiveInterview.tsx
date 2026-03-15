@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useRef, useCallback, useEffect } from "react";
+// import { useInterview } from "./useInterview";
 import { useInterview } from "@/context/InterviewContext";
 import { useToast } from "./use-toast";
 import { generateInterviewFeedback } from "@/ai/flows/generate-interview-feedback";
@@ -13,12 +14,11 @@ if (!apiKey) {
 const WEBSOCKET_URL = `wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent?key=${apiKey}`;
 const AUDIO_SAMPLE_RATE = 24000;
 
-// Reduced buffer size from 4096 to 2048 for lower latency capture
 const workletCode = `
   class AudioProcessor extends AudioWorkletProcessor {
     constructor() {
       super();
-      this.buffer = new Float32Array(2048);
+      this.buffer = new Float32Array(4096);
       this.pointer = 0;
     }
     process(inputs, outputs, parameters) {
@@ -27,7 +27,7 @@ const workletCode = `
         const channelData = input[0];
         for (let i = 0; i < channelData.length; i++) {
           this.buffer[this.pointer++] = channelData[i];
-          if (this.pointer >= 2048) {
+          if (this.pointer >= 4096) {
             this.port.postMessage(new Float32Array(this.buffer));
             this.pointer = 0;
           }
@@ -62,7 +62,6 @@ export const useLiveInterview = () => {
   const audioQueueRef = useRef<string[]>([]);
   const activeSourcesRef = useRef<AudioBufferSourceNode[]>([]);
   const nextPlayTimeRef = useRef<number>(0);
-  const isSchedulingRef = useRef<boolean>(false); // Prevents concurrent scheduling
   
   const isSetupCompleteRef = useRef(false);
   const isConnectingRef = useRef(false);
@@ -94,25 +93,25 @@ export const useLiveInterview = () => {
     activeSourcesRef.current = [];
     nextPlayTimeRef.current = 0;
     audioQueueRef.current = [];
-    isSchedulingRef.current = false;
   }, []);
 
   const scheduleAudio = useCallback(async () => {
-    if (isSchedulingRef.current) return;
-    isSchedulingRef.current = true;
+    if (!audioContextRef.current || audioContextRef.current.state === 'closed') {
+      audioQueueRef.current = [];
+      return;
+    }
 
-    try {
-      const ctx = audioContextRef.current;
-      if (!ctx || ctx.state === 'closed') return;
+    if (audioContextRef.current.state === 'suspended') {
+      await audioContextRef.current.resume();
+    }
 
-      if (ctx.state === 'suspended') {
-        await ctx.resume();
-      }
+    const ctx = audioContextRef.current;
 
-      while (audioQueueRef.current.length > 0) {
-        const base64Audio = audioQueueRef.current.shift();
-        if (!base64Audio) continue;
+    while (audioQueueRef.current.length > 0) {
+      const base64Audio = audioQueueRef.current.shift();
+      if (!base64Audio) continue;
 
+      try {
         const binaryString = atob(base64Audio);
         const bytes = new Uint8Array(binaryString.length);
         for (let i = 0; i < binaryString.length; i++) {
@@ -126,17 +125,15 @@ export const useLiveInterview = () => {
         }
 
         const audioBuffer = ctx.createBuffer(1, float32Data.length, AUDIO_SAMPLE_RATE);
-        audioBuffer.copyToChannel(float32Data, 0); // Faster than getChannelData().set()
+        audioBuffer.getChannelData(0).set(float32Data);
 
         const source = ctx.createBufferSource();
         source.buffer = audioBuffer;
         source.connect(ctx.destination);
 
         const currentTime = ctx.currentTime;
-        
-        // Jitter Buffer: If playback is falling behind, add a 100ms buffer to prevent stuttering
-        if (nextPlayTimeRef.current < currentTime + 0.02) {
-          nextPlayTimeRef.current = currentTime + 0.1; 
+        if (nextPlayTimeRef.current < currentTime) {
+          nextPlayTimeRef.current = currentTime + 0.05; 
         }
 
         source.start(nextPlayTimeRef.current);
@@ -151,11 +148,9 @@ export const useLiveInterview = () => {
             setAiStatus((prev) => (prev === 'speaking' ? 'listening' : prev));
           }
         };
+      } catch (error) {
+        console.error("Error playing audio chunk:", error);
       }
-    } catch (error) {
-      console.error("Error playing audio chunk:", error);
-    } finally {
-      isSchedulingRef.current = false;
     }
   }, [setAiStatus]);
 
@@ -263,7 +258,13 @@ CRITICAL RULES:
             systemInstruction: {
               parts: [
                 {
-                  text: `${systemInstructionText}\n\n## Job Description:\n${jobDescription}\n\n## Candidate Resume:\n${resume}`,
+                  text: `${systemInstructionText}
+
+## Job Description:
+${jobDescription}
+
+## Candidate Resume:
+${resume}`,
                 },
               ],
             },
@@ -284,22 +285,6 @@ CRITICAL RULES:
         }
 
         const float32Audio = event.data as Float32Array;
-        
-        // --- LOCAL BARGE-IN (VAD) ---
-        // Calculate RMS volume to detect if the user is speaking.
-        // If volume exceeds threshold, stop AI audio instantly for smooth interruption.
-        let sumSquares = 0;
-        for (let i = 0; i < float32Audio.length; i++) {
-          sumSquares += float32Audio[i] * float32Audio[i];
-        }
-        const rms = Math.sqrt(sumSquares / float32Audio.length);
-        
-        // 0.03 is a standard threshold for speech. Adjust slightly if mic is too sensitive.
-        if (rms > 0.03 && activeSourcesRef.current.length > 0) {
-          stopCurrentAudio();
-          setAiStatus("listening");
-        }
-
         const pcm16Data = new Int16Array(float32Audio.length);
         for (let i = 0; i < float32Audio.length; i++) {
           const s = Math.max(-1, Math.min(1, float32Audio[i]));
@@ -479,6 +464,7 @@ CRITICAL RULES:
     try {
       let transcriptForFeedback = transcript;
       
+      // Removed the instruction to generate a markdown header so it doesn't pollute the summary text
       if (currentRoleRef.current === "interviewer") {
         transcriptForFeedback = [
           {
@@ -504,6 +490,9 @@ CRITICAL RULES:
         userRole: currentRoleRef.current 
       });
 
+      // --- FIX APPLIED HERE ---
+      // We inject the correct dynamic title directly into the feedback object.
+      // Your UI component can now read this title instead of using a hardcoded one.
       const finalFeedback = typeof feedbackResult === "object" && feedbackResult !== null
         ? {
             ...feedbackResult,
