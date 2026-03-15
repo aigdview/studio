@@ -1,12 +1,11 @@
 'use server';
 /**
- * @fileOverview A Genkit flow for generating a detailed feedback report based on an interview transcript, job description, and resume.
- *
- * - generateInterviewFeedback - A function that triggers the feedback generation process.
- * - GenerateInterviewFeedbackInput - The input type for the generateInterviewfeedback function.
- * - GenerateInterviewFeedbackOutput - The return type for the generateInterviewfeedback function.
- */
 
+@fileOverview A Genkit flow for generating a detailed feedback report based on an interview transcript, job description, and resume.
+generateInterviewFeedback - A function that triggers the feedback generation process.
+GenerateInterviewFeedbackInput - The input type for the generateInterviewfeedback function.
+GenerateInterviewFeedbackOutput - The return type for the generateInterviewfeedback function.
+*/
 import { ai } from '@/ai/genkit';
 import { z } from 'genkit';
 
@@ -19,14 +18,16 @@ const GenerateInterviewFeedbackInputSchema = z.object({
       text: z.string().describe('The spoken text.'),
     })
   ).describe('The full transcript of the interview conversation.'),
+  userRole: z.enum(["interviewer", "interviewee"]).describe("The role the user played in the interview."),
 });
 export type GenerateInterviewFeedbackInput = z.infer<typeof GenerateInterviewFeedbackInputSchema>;
 
 const GenerateInterviewFeedbackOutputSchema = z.object({
-  overallFeedback: z.string().describe('A concise overall summary of the candidate\'s performance, in markdown format.'),
-  strengths: z.string().describe('Key strengths of the candidate during the interview, formatted as a markdown list.'),
-  weaknesses: z.string().describe('Weaknesses or areas where the candidate struggled, formatted as a markdown list.'),
-  areasForImprovement: z.string().describe('Actionable advice and specific areas for improvement, formatted as a markdown list.'),
+  reportTitle: z.string().describe("The title of the report. It must be 'Interview Feedback Report - Interviewer' if the user's role was 'interviewer', or 'Interview Feedback Report - Candidate' if the user's role was 'candidate'."),
+  overallFeedback: z.string().describe("A concise overall summary of the user's performance, in markdown format."),
+  strengths: z.string().describe("Key strengths of the user during the interview, formatted as a markdown list."),
+  weaknesses: z.string().describe("Weaknesses or areas where the user struggled, formatted as a markdown list."),
+  areasForImprovement: z.string().describe("Actionable advice and specific areas for improvement, formatted as a markdown list."),
 });
 export type GenerateInterviewFeedbackOutput = z.infer<typeof GenerateInterviewFeedbackOutputSchema>;
 
@@ -40,7 +41,47 @@ const interviewFeedbackPrompt = ai.definePrompt({
   name: 'interviewFeedbackPrompt',
   input: { schema: GenerateInterviewFeedbackInputSchema },
   output: { schema: GenerateInterviewFeedbackOutputSchema },
-  prompt: `You are an expert technical interviewer and performance evaluator. Your task is to analyze a mock interview transcript, considering the provided job description and candidate resume.\n\nProvide a detailed feedback report in markdown format, structured with the following sections:\n\n## Overall Feedback\nA concise summary of the candidate's performance.\n\n## Strengths\nList the candidate's key strengths during the interview.\n\n## Weaknesses\nList the candidate's weaknesses or areas where they struggled.\n\n## Areas for Improvement\nProvide actionable advice and specific areas where the candidate can improve for future interviews.\n\n---\n\n### Job Description:\n\n\`\`\`\n{{{jobDescription}}}\n\`\`\`\n\n### Candidate Resume:\n\n\`\`\`\n{{{resume}}}\n\`\`\`\n\n### Interview Transcript:\n\n\`\`\`\n{{#each transcript}}\n{{this.speaker}}: {{this.text}}\n{{/each}}\n\`\`\``,
+  prompt: `You are an expert performance evaluator. Your task is to analyze a mock interview transcript, considering the provided job description, candidate resume, and the user's role.
+
+First, you MUST set the 'reportTitle' field in the output. Based on the user's role, the title must be one of the following exact strings:
+- If userRole is 'interviewer', use 'Interview Feedback Report - Interviewer'.
+- If userRole is 'candidate', use 'Interview Feedback Report - Candidate'.
+
+Then, provide a detailed feedback report in markdown format evaluating the USER's performance in their role.
+
+The report must be structured with the following sections:
+## Overall Summary
+A concise summary of the user's performance.
+
+## Strengths
+List the user's key strengths during the interview.
+
+## Weaknesses
+List the user's weaknesses or areas where they struggled.
+
+## Areas for Improvement
+Provide actionable advice and specific areas where the user can improve for future interviews.
+
+---
+
+### User's Role: {{{userRole}}}
+
+### Job Description:
+\`\`\`
+{{{jobDescription}}}
+\`\`\`
+
+### Candidate Resume:
+\`\`\`
+{{{resume}}}
+\`\`\`
+
+### Interview Transcript:
+\`\`\`
+{{#each transcript}}
+{{this.speaker}}: {{this.text}}
+{{/each}}
+\`\`\``,
 });
 
 const generateInterviewFeedbackFlow = ai.defineFlow(

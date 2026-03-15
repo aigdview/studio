@@ -71,7 +71,7 @@ export default function SetupPage() {
               </div>
               <div className="space-y-2">
                 <Label htmlFor="resume" className="text-base">
-                  Your Resume
+                  Candidate Resume
                 </Label>
                 <Textarea
                   id="resume"

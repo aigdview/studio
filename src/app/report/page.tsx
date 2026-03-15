@@ -29,14 +29,25 @@ export default function ReportPage() {
     router.push("/");
   };
 
-  const renderMarkdownList = (text: string) => {
+  const renderMarkdownList = (text) => {
     if (!text) return null;
+    
+    // Normalize inline bullet points to ensure they split onto new lines.
+    // This looks for spaces followed by a bullet character (-, *, •) or a number (1., 2.), 
+    // followed by spaces, and inserts a newline before it.
+    const normalizedText = text.replace(/\s+([-*•]\s+|\d+\.\s+)/g, '\n$1');
+
     return (
       <ul className="list-disc space-y-2 pl-5">
-        {text.split('\n').map((item, index) => {
-          const cleanItem = item.replace(/^- /, '').trim();
+        {normalizedText.split('\n').map((item, index) => {
+          // Remove leading bullets or numbers to prevent double-bulleting in the <ul>
+          const cleanItem = item.replace(/^(?:[-*•]|\d+\.)\s*/, '').trim();
           if (cleanItem) {
-            return <li key={index} className="text-sm text-foreground/80">{cleanItem}</li>;
+            return (
+              <li key={index} className="text-sm text-foreground/80">
+                {cleanItem}
+              </li>
+            );
           }
           return null;
         })}
@@ -44,12 +55,18 @@ export default function ReportPage() {
     );
   };
 
+  // If the status is no longer "finished" (e.g., we just called resetInterview),
+  // return null to prevent the UI from flashing the loading screen while the router navigates.
+  if (interviewStatus !== "finished") {
+    return null;
+  }
+
   return (
     <main className="flex min-h-screen flex-col items-center justify-center p-4 sm:p-8">
       <Card className="w-full max-w-4xl shadow-2xl">
         <CardHeader>
           <CardTitle className="text-3xl font-headline text-center">
-            Interview Feedback Report
+            {feedback?.reportTitle || "Interview Feedback Report"}
           </CardTitle>
           <CardDescription className="text-center">
             Here's a breakdown of your performance.
@@ -67,7 +84,7 @@ export default function ReportPage() {
             <div className="space-y-8">
               <div>
                 <h3 className="text-xl font-headline mb-4">Overall Summary</h3>
-                <p className="text-foreground/80">{feedback.overallFeedback}</p>
+                <p className="text-foreground/80 whitespace-pre-wrap">{feedback.overallFeedback}</p>
               </div>
 
               <div className="grid md:grid-cols-3 gap-6">

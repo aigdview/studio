@@ -34,7 +34,7 @@ Excellent leadership, communication, and problem-solving skills.
 PMP (Project Management Professional) or CSM (Certified ScrumMaster) certification is highly preferred.`;
 
 const DEFAULT_RESUME = `Alex Taylor
-San Francisco, CA | (555) 123-4567 | alex.taylor@email.com | linkedin.com/in/alextaylor-itpm
+San Francisco, CA
 
 Professional Summary
 Detail-oriented and certified IT Project Manager with over 5 years of experience leading complex technology initiatives. Proven track record of delivering software and infrastructure projects on time and under budget. Adept at bridging the gap between technical teams and business stakeholders, utilizing Agile and Scrum methodologies to drive efficiency, mitigate risks, and achieve strategic business goals.
