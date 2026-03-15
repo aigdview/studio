@@ -1,10 +1,9 @@
 "use client";
 
 import { useState, useRef, useCallback, useEffect } from "react";
-import { useInterview } from "./useInterview";
+import { useInterview } from "@/context/InterviewContext";
 import { useToast } from "./use-toast";
 import { generateInterviewFeedback } from "@/ai/flows/generate-interview-feedback";
-import type { InterviewStatus } from "@/lib/types";
 
 const apiKey = process.env.NEXT_PUBLIC_GEMINI_API_KEY;
 if (!apiKey) {
@@ -14,13 +13,12 @@ if (!apiKey) {
 const WEBSOCKET_URL = `wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent?key=${apiKey}`;
 const AUDIO_SAMPLE_RATE = 24000;
 
-// This AudioWorklet is used to process audio from the microphone
-// and send it to the WebSocket connection.
+// Reduced buffer size from 4096 to 2048 for lower latency capture
 const workletCode = `
   class AudioProcessor extends AudioWorkletProcessor {
     constructor() {
       super();
-      this.buffer = new Float32Array(4096);
+      this.buffer = new Float32Array(2048);
       this.pointer = 0;
     }
     process(inputs, outputs, parameters) {
@@ -29,7 +27,7 @@ const workletCode = `
         const channelData = input[0];
         for (let i = 0; i < channelData.length; i++) {
           this.buffer[this.pointer++] = channelData[i];
-          if (this.pointer >= 4096) {
+          if (this.pointer >= 2048) {
             this.port.postMessage(new Float32Array(this.buffer));
             this.pointer = 0;
           }
@@ -48,10 +46,10 @@ export const useLiveInterview = () => {
     transcript,
     addTranscriptItem,
     updateLastTranscriptItem,
+    aiStatus,
     setAiStatus,
     setInterviewStatus,
     setFeedback,
-    interviewStatus
   } = useInterview();
   const { toast } = useToast();
 
@@ -59,86 +57,62 @@ export const useLiveInterview = () => {
   const wsRef = useRef<WebSocket | null>(null);
   const audioContextRef = useRef<AudioContext | null>(null);
   const mediaStreamRef = useRef<MediaStream | null>(null);
-  const recognitionRef = useRef<any>(null); // For SpeechRecognition
+  const recognitionRef = useRef<any>(null);
   
   const audioQueueRef = useRef<string[]>([]);
   const activeSourcesRef = useRef<AudioBufferSourceNode[]>([]);
   const nextPlayTimeRef = useRef<number>(0);
+  const isSchedulingRef = useRef<boolean>(false); // Prevents concurrent scheduling
   
-  // State refs for managing connection and turn flow
+  const isSetupCompleteRef = useRef(false);
   const isConnectingRef = useRef(false);
   const isTurnInterruptedRef = useRef(false);
   
   const lastSpeakerRef = useRef<string | null>(null);
+  const isThinkingRef = useRef(false); 
+  const transcriptContainerRef = useRef<HTMLDivElement>(null);
 
-  // We need a ref for the current role to use it in the endInterview callback
   const currentRoleRef = useRef<"interviewer" | "interviewee">("interviewee");
-  
-  // We use a ref for isMuted to access the latest value in the audio processing callback
+
   const isMutedRef = useRef(isMuted);
   useEffect(() => {
     isMutedRef.current = isMuted;
   }, [isMuted]);
 
-  // Clean up all resources when the component unmounts or the interview ends.
-  const cleanup = useCallback(() => {
-    if (wsRef.current) {
-      wsRef.current.onmessage = null;
-      wsRef.current.onclose = null;
-      wsRef.current.onerror = null;
-      if (wsRef.current.readyState === WebSocket.OPEN) {
-        wsRef.current.close();
-      }
-      wsRef.current = null;
+  useEffect(() => {
+    if (transcriptContainerRef.current) {
+      transcriptContainerRef.current.scrollTop = transcriptContainerRef.current.scrollHeight;
     }
-    if (audioContextRef.current?.state !== 'closed') {
-      audioContextRef.current?.close();
-    }
-    if (mediaStreamRef.current) {
-      mediaStreamRef.current.getTracks().forEach(track => track.stop());
-      mediaStreamRef.current = null;
-    }
-    if (recognitionRef.current) {
-      recognitionRef.current.onend = null; // Prevent restart on cleanup
-      try { recognitionRef.current.stop(); } catch(e) {}
-      recognitionRef.current = null;
-    }
-    isConnectingRef.current = false;
-  }, []);
+  }, [transcript]);
 
   const stopCurrentAudio = useCallback(() => {
     activeSourcesRef.current.forEach(source => {
-      source.onended = null; // Prevent onended logic from firing on manual stop
+      source.onended = null;
       try { source.stop(); } catch (e) {}
       source.disconnect();
     });
     activeSourcesRef.current = [];
     nextPlayTimeRef.current = 0;
-    audioQueueRef.current = []; // Clear any queued audio
+    audioQueueRef.current = [];
+    isSchedulingRef.current = false;
   }, []);
-  
-  const handleConnectionError = useCallback((errorType: string, message: string) => {
-    toast({ title: errorType, description: message, variant: "destructive" });
-    setInterviewStatus("error");
-    cleanup();
-  }, [toast, setInterviewStatus, cleanup]);
 
   const scheduleAudio = useCallback(async () => {
-    if (!audioContextRef.current || audioContextRef.current.state === 'closed') {
-      audioQueueRef.current = [];
-      return;
-    }
-    if (audioContextRef.current.state === 'suspended') {
-      await audioContextRef.current.resume();
-    }
+    if (isSchedulingRef.current) return;
+    isSchedulingRef.current = true;
 
-    const ctx = audioContextRef.current;
-    
-    while (audioQueueRef.current.length > 0) {
-      const base64Audio = audioQueueRef.current.shift();
-      if (!base64Audio) continue;
+    try {
+      const ctx = audioContextRef.current;
+      if (!ctx || ctx.state === 'closed') return;
 
-      try {
+      if (ctx.state === 'suspended') {
+        await ctx.resume();
+      }
+
+      while (audioQueueRef.current.length > 0) {
+        const base64Audio = audioQueueRef.current.shift();
+        if (!base64Audio) continue;
+
         const binaryString = atob(base64Audio);
         const bytes = new Uint8Array(binaryString.length);
         for (let i = 0; i < binaryString.length; i++) {
@@ -152,19 +126,23 @@ export const useLiveInterview = () => {
         }
 
         const audioBuffer = ctx.createBuffer(1, float32Data.length, AUDIO_SAMPLE_RATE);
-        audioBuffer.getChannelData(0).set(float32Data);
+        audioBuffer.copyToChannel(float32Data, 0); // Faster than getChannelData().set()
 
         const source = ctx.createBufferSource();
         source.buffer = audioBuffer;
         source.connect(ctx.destination);
 
         const currentTime = ctx.currentTime;
-        const startTime = Math.max(nextPlayTimeRef.current, currentTime + 0.05); // Add small buffer
-        source.start(startTime);
         
-        nextPlayTimeRef.current = startTime + audioBuffer.duration;
+        // Jitter Buffer: If playback is falling behind, add a 100ms buffer to prevent stuttering
+        if (nextPlayTimeRef.current < currentTime + 0.02) {
+          nextPlayTimeRef.current = currentTime + 0.1; 
+        }
+
+        source.start(nextPlayTimeRef.current);
+        nextPlayTimeRef.current += audioBuffer.duration;
         activeSourcesRef.current.push(source);
-        
+
         setAiStatus('speaking');
 
         source.onended = () => {
@@ -173,23 +151,32 @@ export const useLiveInterview = () => {
             setAiStatus((prev) => (prev === 'speaking' ? 'listening' : prev));
           }
         };
-      } catch (error) {
-        console.error("Error playing audio chunk:", error);
       }
+    } catch (error) {
+      console.error("Error playing audio chunk:", error);
+    } finally {
+      isSchedulingRef.current = false;
     }
   }, [setAiStatus]);
 
-  const startInterview = useCallback(async (role: "interviewer" | "interviewee") => {
+  const startInterview = useCallback(async (role: "interviewer" | "interviewee" = "interviewee") => {
     if (isConnectingRef.current || wsRef.current) return;
-    
     isConnectingRef.current = true;
+    
     currentRoleRef.current = role;
 
     setInterviewStatus("in-progress");
     setAiStatus("thinking");
+    isSetupCompleteRef.current = false;
     isTurnInterruptedRef.current = false;
+    
     lastSpeakerRef.current = null;
+    isThinkingRef.current = false;
 
+    const isUserInterviewer = role === "interviewer";
+    const userLabel = isUserInterviewer ? "Interviewer (You)" : "Interviewee (You)";
+    const aiLabel = isUserInterviewer ? "AI Candidate" : "AI Interviewer";
+    
     let workletUrl = "";
     
     try {
@@ -204,7 +191,6 @@ export const useLiveInterview = () => {
       });
       mediaStreamRef.current = stream;
 
-      // Initialize SpeechRecognition for live transcription (this does not send audio)
       const SpeechRecognition = window.SpeechRecognition || (window as any).webkitSpeechRecognition;
       if (SpeechRecognition) {
         const recognition = new SpeechRecognition();
@@ -213,13 +199,12 @@ export const useLiveInterview = () => {
         recognition.lang = 'en-US';
 
         recognition.onresult = (event: any) => {
-          const userLabel = role === "interviewer" ? "Interviewer (You)" : "Interviewee (You)";
           for (let i = event.resultIndex; i < event.results.length; ++i) {
             if (event.results[i].isFinal) {
               const text = event.results[i][0].transcript.trim();
               if (text) {
                 if (lastSpeakerRef.current !== userLabel) {
-                  addTranscriptItem({ speaker: userLabel, text });
+                  addTranscriptItem({ speaker: userLabel, text: text });
                   lastSpeakerRef.current = userLabel;
                 } else {
                   updateLastTranscriptItem(" " + text);
@@ -228,19 +213,17 @@ export const useLiveInterview = () => {
             }
           }
         };
+
         recognition.onend = () => {
-          // Restart recognition if it stops unexpectedly during an interview
-          if (wsRef.current?.readyState === WebSocket.OPEN && interviewStatus === "in-progress") {
-            try { recognition.start(); } catch (e) {
-              console.error("Speech recognition restart failed:", e);
-            }
+          if (isSetupCompleteRef.current && wsRef.current?.readyState === WebSocket.OPEN) {
+            try { recognition.start(); } catch (e) {}
           }
         };
+
         recognitionRef.current = recognition;
         recognition.start();
       }
 
-      // Setup AudioContext and AudioWorklet for sending audio to AI
       const audioContext = new (window.AudioContext || (window as any).webkitAudioContext)({
         sampleRate: AUDIO_SAMPLE_RATE,
       });
@@ -250,32 +233,42 @@ export const useLiveInterview = () => {
       workletUrl = URL.createObjectURL(blob);
 
       await audioContext.audioWorklet.addModule(workletUrl);
+
       const workletNode = new AudioWorkletNode(audioContext, 'audio-processor');
       const source = audioContext.createMediaStreamSource(stream);
       source.connect(workletNode);
 
-      // Setup WebSocket connection
       const ws = new WebSocket(WEBSOCKET_URL);
       wsRef.current = ws;
 
       ws.onopen = () => {
-        const aiInterviewerPrompt = `You are an expert technical interviewer named Echo. Conduct a realistic mock interview for the provided job description and candidate resume. Start the interview by introducing yourself and asking the first question. Speak naturally and wait for the user to respond.`;
-        const aiCandidatePrompt = `You are a job candidate applying for the role in the job description, using the provided resume as your background. The user is the interviewer. Act professionally and wait for the interviewer to ask questions. Start by greeting the interviewer and confirming you are ready.`;
-        
+        const aiInterviewerPrompt = `You are an expert technical interviewer named Echo. Conduct a realistic mock interview for an IT role based on the provided Job Description and Candidate Resume.
+CRITICAL RULES:
+1. ONLY output the exact words you are speaking to the candidate.
+2. NEVER output internal thoughts or actions.
+3. Start the interview immediately by introducing yourself and asking the first question.`;
+
+        const aiCandidatePrompt = `You are a job candidate applying for an IT role. The user is the interviewer. Answer their questions realistically based on the provided Candidate Resume. 
+CRITICAL RULES:
+1. ONLY output the exact words you are speaking to the interviewer.
+2. NEVER output internal thoughts or actions.
+3. Act professionally, draw upon the experience in the resume, and wait for the interviewer to guide the conversation.
+4. Start by greeting the interviewer and confirming you are ready.`;
+
+        const systemInstructionText = isUserInterviewer ? aiCandidatePrompt : aiInterviewerPrompt;
+
         const setupMessage = {
           setup: {
             model: "models/gemini-2.5-flash-native-audio-latest",
             systemInstruction: {
-              parts: [{ text: role === 'interviewer' ? aiCandidatePrompt : aiInterviewerPrompt }],
-            },
-            context: {
               parts: [
-                { text: `\n## Job Description:\n${jobDescription}` },
-                { text: `\n## Candidate Resume:\n${resume}` },
-              ]
+                {
+                  text: `${systemInstructionText}\n\n## Job Description:\n${jobDescription}\n\n## Candidate Resume:\n${resume}`,
+                },
+              ],
             },
             generationConfig: {
-              responseModalities: ["AUDIO", "TEXT"],
+              responseModalities: ["AUDIO"],
               speechConfig: {
                 voiceConfig: { prebuiltVoiceConfig: { voiceName: "Aoede" } },
               },
@@ -284,14 +277,29 @@ export const useLiveInterview = () => {
         };
         ws.send(JSON.stringify(setupMessage));
       };
-      
-      // Setup AudioWorklet message handler
+
       workletNode.port.onmessage = (event) => {
-        if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN || isMutedRef.current) {
+        if (!isSetupCompleteRef.current || !wsRef.current || wsRef.current.readyState !== WebSocket.OPEN || isMutedRef.current) {
           return;
         }
 
         const float32Audio = event.data as Float32Array;
+        
+        // --- LOCAL BARGE-IN (VAD) ---
+        // Calculate RMS volume to detect if the user is speaking.
+        // If volume exceeds threshold, stop AI audio instantly for smooth interruption.
+        let sumSquares = 0;
+        for (let i = 0; i < float32Audio.length; i++) {
+          sumSquares += float32Audio[i] * float32Audio[i];
+        }
+        const rms = Math.sqrt(sumSquares / float32Audio.length);
+        
+        // 0.03 is a standard threshold for speech. Adjust slightly if mic is too sensitive.
+        if (rms > 0.03 && activeSourcesRef.current.length > 0) {
+          stopCurrentAudio();
+          setAiStatus("listening");
+        }
+
         const pcm16Data = new Int16Array(float32Audio.length);
         for (let i = 0; i < float32Audio.length; i++) {
           const s = Math.max(-1, Math.min(1, float32Audio[i]));
@@ -305,132 +313,229 @@ export const useLiveInterview = () => {
         }
         const base64AudioData = btoa(binary);
 
-        wsRef.current.send(JSON.stringify({
-          realtimeInput: { mediaChunks: [{ mimeType: `audio/pcm;rate=${AUDIO_SAMPLE_RATE}`, data: base64AudioData }] }
-        }));
+        const clientContentMessage = {
+          realtimeInput: {
+            mediaChunks: [
+              {
+                mimeType: `audio/pcm;rate=${AUDIO_SAMPLE_RATE}`,
+                data: base64AudioData,
+              },
+            ],
+          },
+        };
+        wsRef.current.send(JSON.stringify(clientContentMessage));
       };
 
       ws.onmessage = async (event) => {
-        let messageData = event.data;
-        if (messageData instanceof Blob) {
-          messageData = await messageData.text();
-        }
-        const response = JSON.parse(messageData);
+        try {
+          let messageData = event.data;
+          if (messageData instanceof Blob) {
+            messageData = await messageData.text();
+          }
 
-        if (response.setupComplete) {
-          // This is the crucial step: send the first message to kick off the conversation.
-          const kickoffText = role === "interviewer"
-            ? "Hello! I'll be your interviewer today. I have your resume here. Are you ready to begin?"
-            : "Hello, I'm ready for the interview.";
-          ws.send(JSON.stringify({ clientContent: { turns: [{ role: "user", parts: [{ text: kickoffText }] }], turnComplete: true }}));
-          return;
-        }
+          const response = JSON.parse(messageData);
+          
+          if (response.setupComplete) {
+            isSetupCompleteRef.current = true;
+            
+            const kickoffText = isUserInterviewer 
+              ? "Hello! I am the interviewer. I have your resume here. Are you ready to begin?"
+              : "Hello! I am ready for the interview. Please introduce yourself and ask the first question.";
 
-        if (response.serverContent?.interrupted) {
+            const kickoffMessage = {
+              clientContent: {
+                turns: [
+                  {
+                    role: "user",
+                    parts: [{ text: kickoffText }]
+                  }
+                ],
+                turnComplete: true
+              }
+            };
+            ws.send(JSON.stringify(kickoffMessage));
+            return;
+          }
+
+          if (response.serverContent?.interrupted) {
              isTurnInterruptedRef.current = true;
              stopCurrentAudio();
              setAiStatus("listening");
-             lastSpeakerRef.current = null;
+             lastSpeakerRef.current = null; 
              return; 
-        }
+          }
 
-        if (response.serverContent?.turnComplete) {
-          isTurnInterruptedRef.current = false;
-          setAiStatus("listening");
-          lastSpeakerRef.current = null; 
-        }
-
-        const parts = response.serverContent?.modelTurn?.parts;
-        if (parts) {
+          if (response.serverContent?.turnComplete) {
             isTurnInterruptedRef.current = false;
-            const aiLabel = role === "interviewer" ? "AI Candidate" : "AI Interviewer";
+            setAiStatus("listening");
+            lastSpeakerRef.current = null; 
+          }
 
-            for (const part of parts) {
-                if (part.text) {
-                  const textChunk = part.text.replace(/[.*?]|\*.*?\*/g, "").trim();
-                  if (textChunk) {
-                      if (lastSpeakerRef.current !== aiLabel) {
-                        addTranscriptItem({ speaker: aiLabel, text: textChunk });
-                        lastSpeakerRef.current = aiLabel;
-                      } else {
-                        updateLastTranscriptItem(textChunk);
+          const parts = response.serverContent?.modelTurn?.parts;
+          if (parts) {
+              isTurnInterruptedRef.current = false;
+
+              for (const part of parts) {
+                  if (part.text) {
+                      let textChunk = part.text;
+
+                      if (isThinkingRef.current) {
+                        const closeIndex = textChunk.indexOf("</think>");
+                        if (closeIndex !== -1) {
+                          isThinkingRef.current = false;
+                          textChunk = textChunk.substring(closeIndex + 8);
+                        } else {
+                          textChunk = ""; 
+                        }
+                      }
+
+                      while (textChunk.includes("<think>")) {
+                        const openIndex = textChunk.indexOf("<think>");
+                        const closeIndex = textChunk.indexOf("</think>", openIndex);
+
+                        if (closeIndex !== -1) {
+                          textChunk = textChunk.substring(0, openIndex) + textChunk.substring(closeIndex + 8);
+                        } else {
+                          isThinkingRef.current = true;
+                          textChunk = textChunk.substring(0, openIndex);
+                          break;
+                        }
+                      }
+
+                      textChunk = textChunk.replace(/[.*?]|\*.*?\*/g, "");
+
+                      if (textChunk) {
+                          if (lastSpeakerRef.current !== aiLabel) {
+                              if (textChunk.trim().length > 0) {
+                                  addTranscriptItem({ speaker: aiLabel, text: textChunk });
+                                  lastSpeakerRef.current = aiLabel;
+                              }
+                          } else {
+                              updateLastTranscriptItem(textChunk);
+                          }
                       }
                   }
-                }
-                if (part.inlineData?.data) {
-                    if (!isTurnInterruptedRef.current) {
-                        audioQueueRef.current.push(part.inlineData.data);
-                        scheduleAudio(); 
-                    }
-                }
-            }
+                  
+                  if (part.inlineData?.data) {
+                      if (!isTurnInterruptedRef.current) {
+                          audioQueueRef.current.push(part.inlineData.data);
+                          scheduleAudio(); 
+                      }
+                  }
+              }
+          }
+        } catch (e) {
+          console.error("Error parsing WebSocket message:", e);
         }
       };
 
       ws.onerror = (error) => {
         console.error("WebSocket Error:", error);
-        handleConnectionError("Connection Error", "Could not connect to the interview service.");
+        toast({ title: "Connection Error", description: "Could not connect to the interview service.", variant: "destructive" });
+        setAiStatus("idle");
       };
 
-      ws.onclose = (event) => {
-        if (event.code === 1007) {
-          handleConnectionError("Authentication Error", "The API key is invalid or has expired. Please check your configuration.");
-        } else if (interviewStatus === "in-progress") {
-          handleConnectionError("Connection Lost", "The connection to the interview service was lost unexpectedly.");
-        }
-        cleanup();
+      ws.onclose = () => {
+        isConnectingRef.current = false;
         if (workletUrl) URL.revokeObjectURL(workletUrl);
       };
     } catch (error) {
+      isConnectingRef.current = false;
       console.error("Error starting interview:", error);
-      handleConnectionError("Microphone Error", "Could not access the microphone. Please check permissions and try again.");
+      toast({ title: "Microphone Error", description: "Could not access the microphone. Please check permissions.", variant: "destructive" });
+      setAiStatus("idle");
+      setInterviewStatus("idle");
     }
-  }, [setInterviewStatus, setAiStatus, handleConnectionError, jobDescription, resume, addTranscriptItem, updateLastTranscriptItem, scheduleAudio, stopCurrentAudio, cleanup, interviewStatus]);
+  }, [setInterviewStatus, setAiStatus, toast, jobDescription, resume, addTranscriptItem, updateLastTranscriptItem, scheduleAudio, stopCurrentAudio]);
 
   const endInterview = useCallback(async () => {
-    setInterviewStatus("finished");
     setAiStatus("thinking");
     stopCurrentAudio();
-    cleanup();
+
+    if (wsRef.current) {
+      wsRef.current.onmessage = null;
+      wsRef.current.close();
+      wsRef.current = null;
+    }
+    if (audioContextRef.current?.state !== 'closed') {
+      audioContextRef.current?.close();
+    }
+    if (mediaStreamRef.current) {
+      mediaStreamRef.current.getTracks().forEach(track => track.stop());
+      mediaStreamRef.current = null;
+    }
+    
+    if (recognitionRef.current) {
+      recognitionRef.current.onend = null;
+      try { recognitionRef.current.stop(); } catch(e) {}
+      recognitionRef.current = null;
+    }
+    
+    isConnectingRef.current = false;
+    setInterviewStatus("finished");
     
     toast({ title: "Interview Ended", description: "Generating your feedback report..." });
     
     try {
-      // Add a system message to guide the AI's evaluation based on the user's role.
-      const transcriptForFeedback = [
-        {
-          speaker: "System" as any, // Use `any` to allow "System" speaker
-          text: `CRITICAL INSTRUCTION: The user played the role of '${currentRoleRef.current}'. You MUST evaluate the USER's performance in that role.`
-        },
-        ...transcript
-      ];
+      let transcriptForFeedback = transcript;
+      
+      if (currentRoleRef.current === "interviewer") {
+        transcriptForFeedback = [
+          {
+            speaker: "System",
+            text: "CRITICAL INSTRUCTION FOR EVALUATION: The user is the INTERVIEWER ('Interviewer (You)') in this transcript. You MUST evaluate the USER'S performance as an interviewer (e.g., question quality, structure, follow-ups). DO NOT evaluate the AI Candidate."
+          },
+          ...transcript
+        ];
+      } else {
+        transcriptForFeedback = [
+          {
+            speaker: "System",
+            text: "CRITICAL INSTRUCTION FOR EVALUATION: The user is the CANDIDATE ('Interviewee (You)') in this transcript. You MUST evaluate the USER'S performance as a candidate."
+          },
+          ...transcript
+        ];
+      }
 
       const feedbackResult = await generateInterviewFeedback({ 
         jobDescription, 
         resume, 
-        transcript: transcriptForFeedback,
-        userRole: currentRoleRef.current,
+        transcript: transcriptForFeedback, 
+        userRole: currentRoleRef.current 
       });
 
-      setFeedback(feedbackResult);
+      const finalFeedback = typeof feedbackResult === "object" && feedbackResult !== null
+        ? {
+            ...feedbackResult,
+            reportTitle: currentRoleRef.current === "interviewer"
+              ? "Interview Feedback Report - Interviewer"
+              : "Interview Feedback Report - Candidate"
+          }
+        : feedbackResult;
+
+      setFeedback(finalFeedback as any);
     } catch (error) {
       console.error("Error generating feedback:", error);
       toast({ title: "Feedback Error", description: "Could not generate feedback report.", variant: "destructive" });
     }
-  }, [jobDescription, resume, transcript, setAiStatus, setInterviewStatus, setFeedback, toast, stopCurrentAudio, cleanup]);
+  }, [jobDescription, resume, transcript, setAiStatus, setInterviewStatus, setFeedback, toast, stopCurrentAudio]);
 
   const toggleMute = useCallback(() => {
     setIsMuted((prev) => !prev);
   }, []);
 
-  // Final cleanup on unmount
   useEffect(() => {
     return () => {
-      if (interviewStatus === "in-progress") {
-        cleanup();
+      stopCurrentAudio();
+      if (wsRef.current) wsRef.current.close();
+      if (audioContextRef.current?.state !== 'closed') audioContextRef.current?.close();
+      if (mediaStreamRef.current) mediaStreamRef.current.getTracks().forEach(t => t.stop());
+      if (recognitionRef.current) {
+        recognitionRef.current.onend = null;
+        try { recognitionRef.current.stop(); } catch(e) {}
       }
     };
-  }, [interviewStatus, cleanup]);
+  }, [stopCurrentAudio]);
 
-  return { startInterview, endInterview, isMuted, toggleMute };
+  return { startInterview, endInterview, isMuted, toggleMute, transcriptContainerRef };
 };

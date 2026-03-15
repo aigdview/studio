@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 import "./globals.css";
+// Importing from the correct context folder now
 import { InterviewProvider } from "@/context/InterviewContext";
 import { Toaster } from "@/components/ui/toaster";
 

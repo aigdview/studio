@@ -1,6 +1,9 @@
 "use client";
 
-import { useInterview } from "@/hooks/useInterview";
+
+import { useInterview } from "@/context/InterviewContext";
+// import { useInterview } from "@/context/InterviewContext";
+// import { useInterview } from "@/hooks/useInterview";
 import { useRouter } from "next/navigation";
 import { Button } from "@/components/ui/button";
 import {
@@ -24,6 +27,8 @@ export default function SetupPage() {
     setJobDescription,
     resume,
     setResume,
+    userRole,
+    setUserRole,
     setInterviewStatus,
   } = useInterview();
   
@@ -33,12 +38,24 @@ export default function SetupPage() {
     setIsMounted(true);
   }, []);
 
-
   const handleStart = () => {
-    if (jobDescription.trim() && resume.trim()) {
+    if (jobDescription.trim() && resume.trim() && userRole) {
       setInterviewStatus("idle");
       router.push("/interview");
     }
+  };
+
+  // Helper functions to handle the null state before a user selects a role
+  const getResumeLabel = () => {
+    if (userRole === "interviewer") return "Candidate's Resume";
+    if (userRole === "interviewee") return "Your Resume";
+    return "Resume"; // Neutral fallback when userRole is null
+  };
+
+  const getResumePlaceholder = () => {
+    if (userRole === "interviewer") return "Paste the candidate's resume here to evaluate them...";
+    if (userRole === "interviewee") return "Paste your resume here...";
+    return "Paste the resume here..."; // Neutral fallback when userRole is null
   };
 
   return (
@@ -56,9 +73,32 @@ export default function SetupPage() {
         <CardContent className="space-y-6">
           {isMounted ? (
             <>
+              {/* Role Selection UI */}
+              <div className="space-y-3">
+                <Label className="text-base">Choose Your Role <span className="text-red-500">*</span></Label>
+                <div className="flex flex-col sm:flex-row gap-4">
+                  <Button
+                    type="button"
+                    variant={userRole === "interviewee" ? "default" : "outline"}
+                    onClick={() => setUserRole("interviewee")}
+                    className="flex-1 h-12 text-base"
+                  >
+                    I am the Candidate
+                  </Button>
+                  <Button
+                    type="button"
+                    variant={userRole === "interviewer" ? "default" : "outline"}
+                    onClick={() => setUserRole("interviewer")}
+                    className="flex-1 h-12 text-base"
+                  >
+                    I am the Interviewer
+                  </Button>
+                </div>
+              </div>
+
               <div className="space-y-2">
                 <Label htmlFor="job-description" className="text-base">
-                  Job Description
+                  Job Description <span className="text-red-500">*</span>
                 </Label>
                 <Textarea
                   id="job-description"
@@ -71,20 +111,28 @@ export default function SetupPage() {
               </div>
               <div className="space-y-2">
                 <Label htmlFor="resume" className="text-base">
-                  Candidate Resume
+                  {getResumeLabel()} <span className="text-red-500">*</span>
                 </Label>
                 <Textarea
                   id="resume"
-                  placeholder="Paste your resume here..."
+                  placeholder={getResumePlaceholder()}
                   value={resume}
                   onChange={(e) => setResume(e.target.value)}
                   className="min-h-[200px] text-sm"
-                  aria-label="Your Resume"
+                  aria-label="Resume"
                 />
               </div>
             </>
           ) : (
             <div className="space-y-6">
+                {/* Skeleton for Role Selection */}
+                <div className="space-y-2">
+                    <Skeleton className="h-6 w-32" />
+                    <div className="flex gap-4">
+                      <Skeleton className="h-12 w-full" />
+                      <Skeleton className="h-12 w-full" />
+                    </div>
+                </div>
                 <div className="space-y-2">
                     <Skeleton className="h-6 w-40" />
                     <Skeleton className="h-[150px] w-full" />
@@ -101,7 +149,7 @@ export default function SetupPage() {
             size="lg"
             className="w-full font-bold text-lg"
             onClick={handleStart}
-            disabled={!jobDescription.trim() || !resume.trim()}
+            disabled={!jobDescription.trim() || !resume.trim() || !userRole}
           >
             Start Mock Interview
           </Button>

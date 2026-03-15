@@ -1,6 +1,6 @@
 "use client";
 
-import { createContext, useState, type ReactNode, Dispatch, SetStateAction } from "react";
+import { createContext, useState, useContext, type ReactNode, Dispatch, SetStateAction } from "react";
 import type {
   AiStatus,
   InterviewStatus,
@@ -69,11 +69,15 @@ Certifications
 
 Project Management Professional (PMP) – Project Management Institute (PMI)`;
 
+export type UserRole = "interviewer" | "interviewee";
+
 interface InterviewContextType {
   jobDescription: string;
   setJobDescription: (jd: string) => void;
   resume: string;
   setResume: (resume: string) => void;
+  userRole: UserRole;
+  setUserRole: (role: UserRole) => void;
   transcript: TranscriptItem[];
   setTranscript: Dispatch<SetStateAction<TranscriptItem[]>>;
   addTranscriptItem: (item: TranscriptItem) => void;
@@ -94,6 +98,7 @@ export const InterviewContext = createContext<InterviewContextType | undefined>(
 export function InterviewProvider({ children }: { children: ReactNode }) {
   const [jobDescription, setJobDescription] = useState(DEFAULT_JOB_DESCRIPTION);
   const [resume, setResume] = useState(DEFAULT_RESUME);
+  const [userRole, setUserRole] = useState<UserRole>("interviewee"); // Default to candidate
   const [transcript, setTranscript] = useState<TranscriptItem[]>([]);
   const [interviewStatus, setInterviewStatus] =
     useState<InterviewStatus>("idle");
@@ -123,6 +128,8 @@ export function InterviewProvider({ children }: { children: ReactNode }) {
     setInterviewStatus("idle");
     setAiStatus("idle");
     setFeedback(null);
+    // Note: We intentionally do not reset userRole, jobDescription, or resume here 
+    // so the user can easily retry the same interview scenario.
   };
 
   const value = {
@@ -130,6 +137,8 @@ export function InterviewProvider({ children }: { children: ReactNode }) {
     setJobDescription,
     resume,
     setResume,
+    userRole,
+    setUserRole,
     transcript,
     setTranscript,
     addTranscriptItem,
@@ -148,4 +157,13 @@ export function InterviewProvider({ children }: { children: ReactNode }) {
       {children}
     </InterviewContext.Provider>
   );
+}
+
+// ADDED THIS: The custom hook so your pages can easily access the context!
+export function useInterview() {
+  const context = useContext(InterviewContext);
+  if (context === undefined) {
+    throw new Error("useInterview must be used within an InterviewProvider");
+  }
+  return context;
 }

@@ -1,11 +1,14 @@
 "use client";
 
-import { useEffect, useState } from "react";
+
+import { useInterview } from "@/context/InterviewContext";
+// import { useInterview } from "@/context/InterviewContext";
+import { useEffect } from "react";
 import { useRouter } from "next/navigation";
-import { useInterview } from "@/hooks/useInterview";
+// import { useInterview } from "@/hooks/useInterview";
 import { useLiveInterview } from "@/hooks/useLiveInterview";
 import { Button } from "@/components/ui/button";
-import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
+import { Card, CardContent } from "@/components/ui/card";
 import { Mic, MicOff, PhoneOff, Bot, AlertTriangle, User, UserCheck } from "lucide-react";
 import { ThinkingIcon, SpeakingIcon, ListeningIcon } from "@/components/icons";
 import { cn } from "@/lib/utils";
@@ -13,13 +16,11 @@ import { cn } from "@/lib/utils";
 export default function InterviewPage() {
   const router = useRouter();
   
-  // Manage role selection entirely within local state
-  const [isRoleSelected, setIsRoleSelected] = useState(false);
-  const [userRole, setUserRole] = useState<"interviewer" | "interviewee" | null>(null);
-
+  // 1. Pull userRole directly from your global context
   const {
     jobDescription,
     resume,
+    userRole,
     aiStatus,
     interviewStatus,
     resetInterview,
@@ -29,13 +30,12 @@ export default function InterviewPage() {
     useLiveInterview();
 
   useEffect(() => {
-    // Only start the interview once the user has selected a role
-    if (interviewStatus === "idle" && isRoleSelected && userRole) {
-      // FIXED: Pass the selected userRole to startInterview
+    // 2. Automatically start the interview since we already have the userRole from page 1
+    if (interviewStatus === "idle" && userRole) {
       startInterview(userRole); 
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [interviewStatus, isRoleSelected, userRole]);
+  }, [interviewStatus, userRole]);
 
   useEffect(() => {
     if (interviewStatus === "finished") {
@@ -44,10 +44,11 @@ export default function InterviewPage() {
   }, [interviewStatus, router]);
 
   useEffect(() => {
-    if (!jobDescription || !resume) {
+    // 3. Kick them back to the setup page if they somehow bypassed it without a role, resume, or job description
+    if (!jobDescription || !resume || !userRole) {
       router.push("/");
     }
-  }, [jobDescription, resume, router]);
+  }, [jobDescription, resume, userRole, router]);
   
   const handleTryAgain = () => {
     resetInterview();
@@ -102,82 +103,27 @@ export default function InterviewPage() {
     );
   };
 
-  // Render the Role Selection screen if a role hasn't been chosen yet
-  if (!isRoleSelected) {
-    return (
-      <div className="flex h-screen w-full flex-col items-center justify-center p-4 md:p-8 bg-background">
-        <Card className="w-full max-w-3xl shadow-2xl">
-          <CardHeader className="text-center pb-2">
-            <CardTitle className="text-3xl font-bold">Choose Your Role</CardTitle>
-            <CardDescription className="text-base mt-2">
-              How would you like to practice today?
-            </CardDescription>
-          </CardHeader>
-          <CardContent className="flex flex-col md:flex-row gap-6 p-8">
-            <Button
-              variant="outline"
-              className="flex-1 h-auto flex-col gap-4 p-8 whitespace-normal hover:border-primary hover:bg-primary/5 transition-all"
-              onClick={() => {
-                setUserRole("interviewee");
-                setIsRoleSelected(true);
-              }}
-            >
-              <User className="w-16 h-16 text-primary" />
-              <div className="text-center">
-                <h3 className="text-xl font-bold">I am the Candidate</h3>
-                <p className="text-sm text-muted-foreground mt-2">
-                  The AI will act as the interviewer and ask you questions based on your resume.
-                </p>
-              </div>
-            </Button>
-
-            <Button
-              variant="outline"
-              className="flex-1 h-auto flex-col gap-4 p-8 whitespace-normal hover:border-accent hover:bg-accent/5 transition-all"
-              onClick={() => {
-                setUserRole("interviewer");
-                setIsRoleSelected(true);
-              }}
-            >
-              <UserCheck className="w-16 h-16 text-accent" />
-              <div className="text-center">
-                <h3 className="text-xl font-bold">I am the Interviewer</h3>
-                <p className="text-sm text-muted-foreground mt-2">
-                  The AI will act as the candidate. You will ask the questions and evaluate their answers.
-                </p>
-              </div>
-            </Button>
-          </CardContent>
-        </Card>
-      </div>
-    );
-  }
-
-  // Render the active interview screen
+  // Render the active interview screen directly
   return (
     <div className="flex h-screen w-full flex-col items-center justify-center p-4 md:p-8">
       <Card className="w-full max-w-4xl h-full flex flex-col shadow-2xl relative">
 
-
-
         {/* Small badge to remind the user of their role */}
         <div className="absolute top-4 left-0 w-full flex justify-center pointer-events-none">
-  <div 
-    className={`px-3 py-1 rounded-full text-xs font-semibold flex items-center gap-2 origin-top pointer-events-auto border shadow-sm transition-colors
-      ${userRole === "interviewer" 
-        ? "bg-blue-50 text-blue-700 border-blue-200" 
-        : "bg-emerald-50 text-emerald-700 border-emerald-200"}`}
-    style={{ transform: "scale(2.3)" }}
-  >
-    {userRole === "interviewer" ? (
-      <><UserCheck size={14} className="text-blue-600" /> You are the Interviewer</>
-    ) : (
-      <><User size={14} className="text-emerald-600" /> You are the Candidate</>
-    )}
-  </div>
-</div>
-
-
+          <div 
+            className={`px-3 py-1 rounded-full text-xs font-semibold flex items-center gap-2 origin-top pointer-events-auto border shadow-sm transition-colors
+              ${userRole === "interviewer" 
+                ? "bg-blue-50 text-blue-700 border-blue-200" 
+                : "bg-emerald-50 text-emerald-700 border-emerald-200"}`}
+            style={{ transform: "scale(2.2)" }}
+          >
+            {userRole === "interviewer" ? (
+              <><UserCheck size={14} className="text-blue-600" /> You are the Interviewer</>
+            ) : (
+              <><User size={14} className="text-emerald-600" /> You are the Candidate</>
+            )}
+          </div>
+        </div>
 
         <CardContent className="flex-1 flex flex-col p-4 md:p-6 overflow-hidden mt-8">
           <div className="flex-1 grid place-items-center overflow-hidden">
@@ -186,38 +132,31 @@ export default function InterviewPage() {
             </div>
           </div>
 
-
-
           <div className="flex justify-center items-center gap-12 pt-6 mt-6 border-t shrink-0">
-  <Button
-    variant={isMuted ? "outline" : "secondary"}
-    className="rounded-full w-24 h-24"
-    onClick={toggleMute}
-    aria-label={isMuted ? "Unmute" : "Mute"}
-    disabled={interviewStatus === 'error'}
-  >
-    {/* Added "!" to force the size to override the Button's default rules */}
-    {isMuted ? (
-      <MicOff className="!w-10 !h-10" />
-    ) : (
-      <Mic className="!w-10 !h-10" />
-    )}
-  </Button>
+            <Button
+              variant={isMuted ? "outline" : "secondary"}
+              className="rounded-full w-24 h-24"
+              onClick={toggleMute}
+              aria-label={isMuted ? "Unmute" : "Mute"}
+              disabled={interviewStatus === 'error'}
+            >
+              {isMuted ? (
+                <MicOff className="!w-10 !h-10" />
+              ) : (
+                <Mic className="!w-10 !h-10" />
+              )}
+            </Button>
 
-  <Button
-    variant="destructive"
-    className="rounded-full w-24 h-24"
-    onClick={endInterview}
-    aria-label="End Interview"
-    disabled={interviewStatus === 'error'}
-  >
-    {/* Added "!" to force the size to override the Button's default rules */}
-    <PhoneOff className="!w-10 !h-10" />
-  </Button>
-</div>
-
-
-
+            <Button
+              variant="destructive"
+              className="rounded-full w-24 h-24"
+              onClick={endInterview}
+              aria-label="End Interview"
+              disabled={interviewStatus === 'error'}
+            >
+              <PhoneOff className="!w-10 !h-10" />
+            </Button>
+          </div>
         </CardContent>
       </Card>
     </div>
